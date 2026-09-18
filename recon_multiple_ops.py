@@ -166,95 +166,6 @@ def resolve_encoding(
     return "utf-8", "default"
 
 
-
-
-# ============================================================
-# EOL / NEWLINE DETECTION
-# ============================================================
-
-def detect_eol(filepath: str, encoding: str) -> dict:
-    """
-    Detect both file-level line endings and any embedded
-    newlines inside field values.
-
-    Returns:
-        {
-          "file_eol"   : "CRLF" | "LF" | "CR" | "MIXED" | "NONE",
-          "eol_counts" : {"CRLF": n, "LF": n, "CR": n},
-          "embedded_newline_rows": [
-              {"row": row_number_1based, "col": col_name, "value": raw_value},
-              ...
-          ],
-        }
-
-    File-level detection reads raw bytes so it works regardless
-    of how pandas decodes the file.
-    """
-
-    # ---- file-level line endings (raw bytes) ----------------
-
-    with open(filepath, "rb") as f:
-        raw = f.read()
-
-    crlf_count = raw.count(b"\r\n")
-    # Pure CR: \r not followed by \n
-    cr_count   = sum(
-        1 for i, b in enumerate(raw)
-        if b == ord(b"\r")
-        and (i + 1 >= len(raw) or raw[i + 1] != ord(b"\n"))
-    )
-    # Pure LF: \n not preceded by \r
-    lf_count   = sum(
-        1 for i, b in enumerate(raw)
-        if b == ord(b"\n")
-        and (i == 0 or raw[i - 1] != ord(b"\r"))
-    )
-
-    eol_counts = {"CRLF": crlf_count, "LF": lf_count, "CR": cr_count}
-
-    active = [k for k, v in eol_counts.items() if v > 0]
-
-    if   len(active) == 0: file_eol = "NONE"
-    elif len(active) == 1: file_eol = active[0]
-    else:                  file_eol = "MIXED"
-
-    # ---- embedded newlines inside field values ---------------
-    # Re-read through pandas so quoted multiline fields are
-    # handled correctly.
-
-    embedded = []
-
-    try:
-        df = pd.read_csv(
-            filepath,
-            encoding=encoding,
-            dtype=str,
-            keep_default_na=False,
-        )
-
-        for col in df.columns:
-            for row_idx, val in df[col].items():
-                if isinstance(val, str) and (
-                    "\n" in val or "\r" in val
-                ):
-                    embedded.append(
-                        {
-                            "row":   row_idx + 2,   # 1-based + header
-                            "col":   col,
-                            "value": repr(val),
-                        }
-                    )
-
-    except Exception:
-        # If re-read fails, skip embedded scan gracefully.
-        pass
-
-    return {
-        "file_eol":              file_eol,
-        "eol_counts":            eol_counts,
-        "embedded_newline_rows": embedded,
-    }
-
 # ============================================================
 # CSV LOADING
 # ============================================================
@@ -1198,12 +1109,6 @@ def reconcile(
 
     samples_by_signature = defaultdict(list)
 
-    # Per (position, legacy_value, new_value) error type.
-    # Exactly 1 sample row pair stored per distinct type.
-    column_error_type_counts = Counter()
-
-    samples_by_error_type = {}
-
     # --------------------------------------------------------
     # PASS 2: Candidate matching
     # --------------------------------------------------------
@@ -1331,9 +1236,6 @@ def reconcile(
 
         # ----------------------------------------------------
         # Column-level statistics
-        # Each distinct (position, legacy_value, new_value)
-        # triple is a separate error type.
-        # Only 1 sample row pair is kept per error type.
         # ----------------------------------------------------
 
         for difference in differences:
@@ -1342,68 +1244,55 @@ def reconcile(
                 difference["position"]
             )
 
+            column = (
+                difference["legacy_column"]
+            )
+
             column_mismatch_counts[
                 position
             ] += 1
 
-            # Key that uniquely identifies this error type:
-            # same column AND same pair of values.
-            error_type_key = (
-                position,
-                difference["legacy_value"],
-                difference["new_value"],
-            )
+            if len(
+                samples_by_column[position]
+            ) < config.sample_limit:
 
-            # Track count per error type
-            column_error_type_counts[
-                error_type_key
-            ] += 1
+                samples_by_column[
+                    position
+                ].append(
+                    {
+                        "legacy_index":
+                            legacy_idx,
 
-            # Store exactly 1 sample per error type
-            if error_type_key not in samples_by_error_type:
+                        "new_index":
+                            best_idx,
 
-                samples_by_error_type[
-                    error_type_key
-                ] = {
-                    "legacy_index":
-                        legacy_idx,
+                        "position":
+                            position,
 
-                    "new_index":
-                        best_idx,
+                        "legacy_column":
+                            difference[
+                                "legacy_column"
+                            ],
 
-                    "position":
-                        position,
+                        "new_column":
+                            difference[
+                                "new_column"
+                            ],
 
-                    "legacy_column":
-                        difference[
-                            "legacy_column"
-                        ],
+                        "legacy_value":
+                            difference[
+                                "legacy_value"
+                            ],
 
-                    "new_column":
-                        difference[
-                            "new_column"
-                        ],
+                        "new_value":
+                            difference[
+                                "new_value"
+                            ],
 
-                    "legacy_value":
-                        difference[
-                            "legacy_value"
-                        ],
-
-                    "new_value":
-                        difference[
-                            "new_value"
-                        ],
-
-                    "similarity":
-                        best_score,
-
-                    # Full rows for the unified CSV report
-                    "legacy_full_row":
-                        legacy_row.tolist(),
-
-                    "new_full_row":
-                        new_row.tolist(),
-                }
+                        "similarity":
+                            best_score,
+                    }
+                )
 
         # ----------------------------------------------------
         # Signature samples
@@ -1560,12 +1449,6 @@ def reconcile(
 
         "blocking_columns":
             blocking_columns,
-
-        "column_error_type_counts":
-            column_error_type_counts,
-
-        "samples_by_error_type":
-            samples_by_error_type,
     }
 
 
@@ -2068,321 +1951,6 @@ def export_results(
     )
 
 
-
-
-# ============================================================
-# UNIFIED SINGLE-FILE CSV REPORT
-# ============================================================
-
-def export_unified_csv(
-    results,
-    structure_result,
-    config: "ReconciliationConfig",
-    legacy_df: "pd.DataFrame",
-    new_df: "pd.DataFrame",
-    legacy_eol,
-    new_eol,
-):
-    """
-    Write one consolidated CSV report with clearly labelled
-    sections in this order:
-
-        1. ENCODING
-        2. SCHEMA MISMATCHES
-        3. COUNT MISMATCH
-        4. NEWLINE / EOL
-        5. MISMATCHED DATA  (one block per error type)
-    """
-
-    import csv as _csv
-
-    os.makedirs(
-        config.output_directory,
-        exist_ok=True,
-    )
-
-    out_path = os.path.join(
-        config.output_directory,
-        "reconciliation_report.csv",
-    )
-
-    summary     = results["summary"]
-    col_diffs   = structure_result["column_differences"]
-    legacy_cols = list(legacy_df.columns)
-    new_cols    = list(new_df.columns)
-
-    samples_by_error_type  = results["samples_by_error_type"]
-    column_error_type_counts = results["column_error_type_counts"]
-
-    rows = []   # list of lists – written as CSV at the end
-
-    def blank():
-        rows.append([])
-
-    def section(title):
-        blank()
-        rows.append([f"### {title} ###"])
-        blank()
-
-    def summary_line(text):
-        rows.append([f">> {text}"])
-
-    # ─────────────────────────────────────────────────────────
-    # 1. ENCODING
-    # ─────────────────────────────────────────────────────────
-
-    section("ENCODING")
-
-    rows.append(["field", "value"])
-    rows.append(["legacy_file",    config.legacy_file])
-    rows.append(["legacy_encoding", summary["legacy_encoding"]])
-    rows.append(["new_file",       config.new_file])
-    rows.append(["new_encoding",   summary["new_encoding"]])
-
-    if summary["encoding_mismatch"]:
-        summary_line(
-            f"ENCODING MISMATCH: legacy={summary['legacy_encoding']} "
-            f"vs new={summary['new_encoding']}. "
-            "Comparison is valid — both files decoded to Unicode "
-            "before comparison — but verify this is intentional."
-        )
-    else:
-        summary_line("Encodings match — no encoding difference detected.")
-
-    # ─────────────────────────────────────────────────────────
-    # 2. SCHEMA MISMATCHES
-    # ─────────────────────────────────────────────────────────
-
-    section("SCHEMA MISMATCHES (COLUMN NAME DIFFERENCES)")
-
-    if not col_diffs:
-        summary_line(
-            "No schema differences — all column names match "
-            "at every position."
-        )
-    else:
-        legacy_name_list = ", ".join(
-            d["legacy_column"] for d in col_diffs
-        )
-        new_name_list = ", ".join(
-            d["new_column"] for d in col_diffs
-        )
-        summary_line(
-            f"{len(col_diffs)} column name difference(s) found. "
-            f"Legacy: [{legacy_name_list}] | "
-            f"New: [{new_name_list}]"
-        )
-        rows.append(["position", "legacy_column_name", "new_column_name"])
-        for d in col_diffs:
-            rows.append([
-                d["position"],
-                d["legacy_column"] or "",
-                d["new_column"]    or "",
-            ])
-
-    # ─────────────────────────────────────────────────────────
-    # 3. COUNT MISMATCH
-    # ─────────────────────────────────────────────────────────
-
-    section("COUNT MISMATCH")
-
-    legacy_count = summary["legacy_records"]
-    new_count    = summary["new_records"]
-    diff         = legacy_count - new_count
-
-    if diff == 0:
-        summary_line(
-            f"Row counts match — both files have {legacy_count:,} records."
-        )
-    else:
-        summary_line(
-            f"Row count difference of {abs(diff):,}: "
-            f"legacy={legacy_count:,}, new={new_count:,}. "
-            + (
-                f"{abs(diff):,} record(s) present in legacy but missing in new."
-                if diff > 0 else
-                f"{abs(diff):,} record(s) present in new but missing in legacy."
-            )
-        )
-
-    rows.append(["metric",           "legacy",       "new"])
-    rows.append(["total_records",     legacy_count,   new_count])
-    rows.append(["exact_matches",
-                 summary["exact_raw_matches"],
-                 summary["exact_raw_matches"]])
-    rows.append(["mismatched_records",
-                 summary["mismatched_records"], ""])
-    rows.append(["unresolved_legacy",
-                 summary["unresolved_legacy_records"], ""])
-    rows.append(["new_only_records",  "", summary["new_only_records"]])
-
-    # ─────────────────────────────────────────────────────────
-    # 4. NEWLINE / EOL
-    # ─────────────────────────────────────────────────────────
-
-    section("NEWLINE / EOL DIFFERENCES")
-
-    legacy_file_eol = legacy_eol["file_eol"]
-    new_file_eol    = new_eol["file_eol"]
-    eol_mismatch    = legacy_file_eol != new_file_eol
-    legacy_embedded = legacy_eol["embedded_newline_rows"]
-    new_embedded    = new_eol["embedded_newline_rows"]
-
-    # -- file-level EOL
-    if eol_mismatch:
-        summary_line(
-            f"FILE-LEVEL EOL MISMATCH: "
-            f"legacy uses {legacy_file_eol}, new uses {new_file_eol}."
-        )
-    else:
-        summary_line(
-            f"File-level line endings match ({legacy_file_eol})."
-        )
-
-    rows.append(["source", "file_eol", "CRLF_count", "LF_count", "CR_count"])
-    for label, eol in [("legacy", legacy_eol), ("new", new_eol)]:
-        rows.append([
-            label,
-            eol["file_eol"],
-            eol["eol_counts"]["CRLF"],
-            eol["eol_counts"]["LF"],
-            eol["eol_counts"]["CR"],
-        ])
-
-    # -- embedded newlines
-    total_embedded = len(legacy_embedded) + len(new_embedded)
-    if total_embedded == 0:
-        summary_line(
-            "No embedded newlines found inside any field values."
-        )
-    else:
-        col_set = set(
-            r["col"] for r in legacy_embedded + new_embedded
-        )
-        summary_line(
-            f"{total_embedded} field value(s) contain embedded newlines "
-            f"across column(s): {', '.join(sorted(col_set))}."
-        )
-
-        blank()
-        rows.append(["--- Embedded newlines in LEGACY file ---"])
-        if legacy_embedded:
-            rows.append(["data_row", "column", "raw_value"])
-            for r in legacy_embedded:
-                rows.append([r["row"], r["col"], r["value"]])
-        else:
-            rows.append(["(none)"])
-
-        blank()
-        rows.append(["--- Embedded newlines in NEW file ---"])
-        if new_embedded:
-            rows.append(["data_row", "column", "raw_value"])
-            for r in new_embedded:
-                rows.append([r["row"], r["col"], r["value"]])
-        else:
-            rows.append(["(none)"])
-
-    # ─────────────────────────────────────────────────────────
-    # 5. MISMATCHED DATA
-    # One block per (column, error-type).
-    # Error type = distinct (legacy_value, new_value) pair.
-    # Each block: column header row, then 1 legacy row,
-    # then 1 new row (full rows, all column values).
-    # ─────────────────────────────────────────────────────────
-
-    section("MISMATCHED DATA")
-
-    if not samples_by_error_type:
-        summary_line("No data mismatches found.")
-    else:
-        # Group error types by column position so all blocks
-        # for the same column are consecutive.
-        by_position = defaultdict(list)
-        for key in samples_by_error_type:
-            position, legacy_val, new_val = key
-            by_position[position].append(key)
-
-        for position in sorted(by_position.keys()):
-
-            keys_for_col = sorted(
-                by_position[position],
-                key=lambda k: (k[1], k[2]),
-            )
-
-            sample_0 = samples_by_error_type[keys_for_col[0]]
-            col_legacy_name = sample_0["legacy_column"]
-            col_new_name    = sample_0["new_column"]
-
-            col_label = (
-                col_legacy_name
-                if col_legacy_name == col_new_name
-                else f"{col_legacy_name} / {col_new_name}"
-            )
-
-            type_count    = len(keys_for_col)
-            total_records = sum(
-                column_error_type_counts[k]
-                for k in keys_for_col
-            )
-
-            summary_line(
-                f"Column '{col_label}' (position {position}): "
-                f"{type_count} distinct error type(s) across "
-                f"{total_records:,} mismatched record(s)."
-            )
-
-            for key in keys_for_col:
-
-                position, legacy_val, new_val = key
-                sample = samples_by_error_type[key]
-                count  = column_error_type_counts[key]
-
-                blank()
-                # Column name as block header
-                rows.append([col_label])
-                # Error type summary
-                rows.append([
-                    f"error_type: legacy='{legacy_val}' "
-                    f"vs new='{new_val}' "
-                    f"| occurrences={count:,}"
-                ])
-
-                # Full header row (all column names)
-                rows.append(legacy_cols)
-
-                # Legacy full row
-                legacy_full = sample["legacy_full_row"]
-                rows.append(
-                    ["[LEGACY]"] + legacy_full[1:]
-                    if len(legacy_full) > 1
-                    else ["[LEGACY]"] + legacy_full
-                )
-                # Prepend the source label cleanly
-                legacy_row_out = list(legacy_full)
-                new_row_out    = list(sample["new_full_row"])
-
-                # Replace first value with source label
-                rows[-1] = (
-                    ["[LEGACY]"]
-                    + legacy_row_out
-                )
-                rows.append(
-                    ["[NEW]"]
-                    + new_row_out
-                )
-
-    # ─────────────────────────────────────────────────────────
-    # Write
-    # ─────────────────────────────────────────────────────────
-
-    with open(out_path, "w", newline="", encoding="utf-8") as f:
-        writer = _csv.writer(f, quoting=_csv.QUOTE_ALL)
-        for row in rows:
-            writer.writerow([str(c) for c in row])
-
-    print(f"\nUnified report written to: {out_path}")
-    return out_path
-
 # ============================================================
 # MAIN
 # ============================================================
@@ -2394,19 +1962,13 @@ def parse_args():
 
     Required positional arguments:
 
-        legacy_file   new_file
-
-    Optional encoding flags (omit to auto-detect):
-
-        --legacy-encoding ENCODING
-        --new-encoding    ENCODING
+        legacy_file   legacy_encoding   new_file   new_encoding
 
     Usage:
 
-        python recon.py legacy.csv current.csv
-        python recon.py legacy.csv current.csv --legacy-encoding utf-8 --new-encoding utf-16
+        python recon.py legacy.csv utf-8 current.csv utf-16
 
-    Other optional flags:
+    Optional flags (must follow the four positional args):
 
         --delimiter CHAR        field delimiter     (default: ,)
         --output    DIR         output directory    (default: reconciliation_output)
@@ -2424,9 +1986,9 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description=(
             "Reconcile a legacy CSV against a new CSV.\n\n"
-            "  python recon.py legacy.csv current.csv\n"
-            "  python recon.py legacy.csv current.csv "
-            "--legacy-encoding utf-8 --new-encoding utf-16"
+            "  python recon.py "
+            "legacy.csv utf-8 "
+            "current.csv utf-16"
         ),
         formatter_class=(
             argparse.RawDescriptionHelpFormatter
@@ -2434,24 +1996,24 @@ def parse_args():
     )
 
     # --------------------------------------------------------
+    # --------------------------------------------------------
     # Required positional arguments
     # --------------------------------------------------------
-
+    
     parser.add_argument(
         "legacy_file",
         help="Path to the legacy CSV file",
     )
-
+    
     parser.add_argument(
         "new_file",
         help="Path to the new/current CSV file",
     )
-
+    
     # --------------------------------------------------------
-    # Optional encoding flags
-    # Omit both to let chardet auto-detect each file.
+    # Optional encoding arguments
     # --------------------------------------------------------
-
+    
     parser.add_argument(
         "--legacy-encoding",
         default="",
@@ -2459,10 +2021,10 @@ def parse_args():
         help=(
             "Encoding of the legacy file "
             "(e.g. utf-8, utf-16, latin-1). "
-            "Auto-detected when omitted."
+            "If omitted, encoding is auto-detected."
         ),
     )
-
+    
     parser.add_argument(
         "--new-encoding",
         default="",
@@ -2470,10 +2032,9 @@ def parse_args():
         help=(
             "Encoding of the new file "
             "(e.g. utf-8, utf-16, latin-1). "
-            "Auto-detected when omitted."
+            "If omitted, encoding is auto-detected."
         ),
     )
-
     # --------------------------------------------------------
     # Optional flags
     # --------------------------------------------------------
@@ -2648,37 +2209,7 @@ if __name__ == "__main__":
     )
 
     # --------------------------------------------------------
-    # 4. EOL DETECTION
-    # --------------------------------------------------------
-
-    print("\nDetecting line endings...")
-
-    legacy_eol = detect_eol(
-        config.legacy_file,
-        config.legacy_encoding,
-    )
-
-    new_eol = detect_eol(
-        config.new_file,
-        config.new_encoding,
-    )
-
-    print(
-        f"  legacy EOL : {legacy_eol['file_eol']} "
-        f"(CRLF={legacy_eol['eol_counts']['CRLF']}, "
-        f"LF={legacy_eol['eol_counts']['LF']}, "
-        f"CR={legacy_eol['eol_counts']['CR']})"
-    )
-
-    print(
-        f"  new    EOL : {new_eol['file_eol']} "
-        f"(CRLF={new_eol['eol_counts']['CRLF']}, "
-        f"LF={new_eol['eol_counts']['LF']}, "
-        f"CR={new_eol['eol_counts']['CR']})"
-    )
-
-    # --------------------------------------------------------
-    # 5. PRINT REPORT  (console summary — unchanged)
+    # 4. PRINT REPORT
     # --------------------------------------------------------
 
     print_report(
@@ -2692,17 +2223,13 @@ if __name__ == "__main__":
     )
 
     # --------------------------------------------------------
-    # 6. UNIFIED SINGLE-FILE EXPORT
+    # 5. EXPORT
     # --------------------------------------------------------
 
-    out_path = export_unified_csv(
+    export_results(
         results,
         structure_result,
-        config,
-        legacy_df,
-        new_df,
-        legacy_eol,
-        new_eol,
+        config.output_directory,
     )
 
     print(
