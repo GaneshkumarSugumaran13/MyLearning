@@ -107,7 +107,7 @@
 ">> Grouping columns identified (3): region, category, status"
 
 
-"--- FILE-LEVEL ROLLUP ---"
+"--- FILE-LEVEL ROLLUP (WITH ERRORS) ---"
 
 
 "metric","amount [LEGACY]","amount [NEW]"
@@ -117,7 +117,7 @@
 ">> ROLLUP MISMATCH on 1 column(s): amount. Cells marked with ' !' indicate a difference."
 
 
-"--- GROUPED ROLLUPS ---"
+"--- GROUPED ROLLUPS (FILE-LEVEL ROLLUP (WITH ERRORS)) ---"
 
 
 "Grouped by: region"
@@ -148,3 +148,46 @@
 "ACTIVE","15365.00 !","15451.00 !","1536.500000 !","1545.100000 !"
 "INACTIVE","15735.00 !","17179.00 !","1573.500000 !","1561.727273 !"
 "PENDING","16105.00 !","14750.00 !","1610.500000 !","1638.888889 !"
+
+
+"--- FILE-LEVEL ROLLUP (WITHOUT ERRORS) ---"
+
+
+"metric","amount [LEGACY]","amount [NEW]"
+"SUM","36986.00","36986.00"
+"AVERAGE","1608.086957","1608.086957"
+"COUNT (parsed)","23","23"
+">> All numeric column totals and averages match between legacy and new files."
+
+
+"--- GROUPED ROLLUPS (FILE-LEVEL ROLLUP (WITHOUT ERRORS)) ---"
+
+
+"Grouped by: region"
+
+
+"region","amount SUM [LEGACY]","amount SUM [NEW]","amount AVG [LEGACY]","amount AVG [NEW]"
+"East","6960.00","6960.00","1740.000000","1740.000000"
+"North","12440.00","12440.00","1555.000000","1555.000000"
+"South","7886.00","7886.00","1577.200000","1577.200000"
+"West","9700.00","9700.00","1616.666667","1616.666667"
+
+
+"Grouped by: category"
+
+
+"category","amount SUM [LEGACY]","amount SUM [NEW]","amount AVG [LEGACY]","amount AVG [NEW]"
+"Online","9663.00","9663.00","1610.500000","1610.500000"
+"Partner","6960.00","6960.00","1740.000000","1740.000000"
+"Retail","8997.00","8997.00","1499.500000","1499.500000"
+"Services","6664.00","6664.00","1666.000000","1666.000000"
+"Wholesale","4702.00","4702.00","1567.333333","1567.333333"
+
+
+"Grouped by: status"
+
+
+"status","amount SUM [LEGACY]","amount SUM [NEW]","amount AVG [LEGACY]","amount AVG [NEW]"
+"ACTIVE","10922.00","10922.00","1560.285714","1560.285714"
+"INACTIVE","15735.00","15735.00","1573.500000","1573.500000"
+"PENDING","10329.00","10329.00","1721.500000","1721.500000"

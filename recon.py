@@ -2291,6 +2291,8 @@ def compute_rollups(
     numeric_cols: list,
     grouping_cols: list,
     null_token: str,
+    error_legacy_indices=None,
+    error_new_indices=None,
 ) -> dict:
     """
     Compute per-file and grouped rollups for all numeric columns.
@@ -2326,7 +2328,9 @@ def compute_rollups(
                   numeric_col: {same keys as file_totals entry}
               }
           }
-      }
+      },
+      "file_totals_without_errors": {...},
+      "grouped_totals_without_errors": {...}
     }
     """
 
@@ -2349,6 +2353,79 @@ def compute_rollups(
                 skipped += 1
         return parsed, skipped
 
+    def _summarise_numeric_frame(legacy_frame, new_frame):
+        totals = {}
+        for col in numeric_cols:
+            legacy_vals, l_skip = _col_decimals(legacy_frame, col)
+            new_vals,    n_skip = _col_decimals(new_frame,    col)
+
+            l_sum   = sum(d for _, d in legacy_vals)
+            n_sum   = sum(d for _, d in new_vals)
+            l_count = len(legacy_vals)
+            n_count = len(new_vals)
+            l_avg   = (l_sum / l_count) if l_count else Decimal(0)
+            n_avg   = (n_sum / n_count) if n_count else Decimal(0)
+
+            totals[col] = {
+                "legacy_sum":     l_sum,
+                "new_sum":        n_sum,
+                "legacy_count":   l_count,
+                "new_count":      n_count,
+                "legacy_skipped": l_skip,
+                "new_skipped":    n_skip,
+                "legacy_avg":     l_avg,
+                "new_avg":        n_avg,
+                "sum_match":      l_sum == n_sum,
+                "avg_match":      l_avg == n_avg,
+            }
+        return totals
+
+    def _summarise_grouped_frame(legacy_frame, new_frame):
+        grouped_totals = {}
+
+        for g_col in grouping_cols:
+            grouped_totals[g_col] = {}
+
+            all_vals = set(legacy_frame[g_col].tolist()) | set(new_frame[g_col].tolist())
+            all_vals.discard("")
+            all_vals.discard(null_token)
+
+            for g_val in sorted(all_vals):
+                legacy_mask = legacy_frame[g_col] == g_val
+                new_mask    = new_frame[g_col]    == g_val
+
+                legacy_sub = legacy_frame[legacy_mask]
+                new_sub    = new_frame[new_mask]
+
+                col_stats = {}
+                for n_col in numeric_cols:
+                    lv, l_skip = _col_decimals(legacy_sub, n_col)
+                    nv, n_skip = _col_decimals(new_sub,    n_col)
+
+                    l_sum   = sum(d for _, d in lv)
+                    n_sum   = sum(d for _, d in nv)
+                    l_count = len(lv)
+                    n_count = len(nv)
+                    l_avg   = (l_sum / l_count) if l_count else Decimal(0)
+                    n_avg   = (n_sum / n_count) if n_count else Decimal(0)
+
+                    col_stats[n_col] = {
+                        "legacy_sum":     l_sum,
+                        "new_sum":        n_sum,
+                        "legacy_count":   l_count,
+                        "new_count":      n_count,
+                        "legacy_skipped": l_skip,
+                        "new_skipped":    n_skip,
+                        "legacy_avg":     l_avg,
+                        "new_avg":        n_avg,
+                        "sum_match":      l_sum == n_sum,
+                        "avg_match":      l_avg == n_avg,
+                    }
+
+                grouped_totals[g_col][g_val] = col_stats
+
+        return grouped_totals
+
     # ── File-level totals ────────────────────────────────────
 
     # Pick up parse rates stored by identify_numeric_columns.
@@ -2358,82 +2435,17 @@ def compute_rollups(
         {},
     )
 
-    file_totals = {}
+    file_totals = _summarise_numeric_frame(legacy_df, new_df)
+    grouped_totals = _summarise_grouped_frame(legacy_df, new_df)
 
-    for col in numeric_cols:
+    error_legacy_indices = set(error_legacy_indices or [])
+    error_new_indices = set(error_new_indices or [])
 
-        legacy_vals, l_skip = _col_decimals(legacy_df, col)
-        new_vals,    n_skip = _col_decimals(new_df,    col)
+    legacy_without_errors = legacy_df.loc[~legacy_df.index.isin(error_legacy_indices)] if error_legacy_indices else legacy_df
+    new_without_errors = new_df.loc[~new_df.index.isin(error_new_indices)] if error_new_indices else new_df
 
-        l_sum   = sum(d for _, d in legacy_vals)
-        n_sum   = sum(d for _, d in new_vals)
-        l_count = len(legacy_vals)
-        n_count = len(new_vals)
-        l_avg   = (l_sum / l_count) if l_count else Decimal(0)
-        n_avg   = (n_sum / n_count) if n_count else Decimal(0)
-
-        file_totals[col] = {
-            "legacy_sum":     l_sum,
-            "new_sum":        n_sum,
-            "legacy_count":   l_count,
-            "new_count":      n_count,
-            "legacy_skipped": l_skip,
-            "new_skipped":    n_skip,
-            "legacy_avg":     l_avg,
-            "new_avg":        n_avg,
-            "sum_match":      l_sum == n_sum,
-            "avg_match":      l_avg == n_avg,
-        }
-
-    # ── Grouped totals ───────────────────────────────────────
-
-    grouped_totals = {}
-
-    for g_col in grouping_cols:
-
-        grouped_totals[g_col] = {}
-
-        # Collect all distinct group values (union of both files)
-        all_vals = set(legacy_df[g_col].tolist()) | set(new_df[g_col].tolist())
-        all_vals.discard("")
-        all_vals.discard(null_token)
-
-        for g_val in sorted(all_vals):
-
-            legacy_mask = legacy_df[g_col] == g_val
-            new_mask    = new_df[g_col]    == g_val
-
-            legacy_sub  = legacy_df[legacy_mask]
-            new_sub     = new_df[new_mask]
-
-            col_stats = {}
-
-            for n_col in numeric_cols:
-
-                lv, l_skip = _col_decimals(legacy_sub, n_col)
-                nv, n_skip = _col_decimals(new_sub,    n_col)
-
-                l_sum   = sum(d for _, d in lv)
-                n_sum   = sum(d for _, d in nv)
-                l_count = len(lv)
-                n_count = len(nv)
-                l_avg   = (l_sum / l_count) if l_count else Decimal(0)
-                n_avg   = (n_sum / n_count) if n_count else Decimal(0)
-
-                col_stats[n_col] = {
-                    "legacy_sum":     l_sum,
-                    "new_sum":        n_sum,
-                    "legacy_count":   l_count,
-                    "new_count":      n_count,
-                    "legacy_skipped": l_skip,
-                    "new_skipped":    n_skip,
-                    "legacy_avg":     l_avg,
-                    "new_avg":        n_avg,
-                    "sum_match":      l_sum == n_sum,
-                    "avg_match":      l_avg == n_avg,
-                }
-
-            grouped_totals[g_col][g_val] = col_stats
+    file_totals_without_errors = _summarise_numeric_frame(legacy_without_errors, new_without_errors)
+    grouped_totals_without_errors = _summarise_grouped_frame(legacy_without_errors, new_without_errors)
 
     return {
         "numeric_columns":  numeric_cols,
@@ -2441,6 +2453,8 @@ def compute_rollups(
         "parse_rates":      parse_rates,
         "file_totals":      file_totals,
         "grouped_totals":   grouped_totals,
+        "file_totals_without_errors": file_totals_without_errors,
+        "grouped_totals_without_errors": grouped_totals_without_errors,
     }
 
 # ============================================================
@@ -2797,140 +2811,135 @@ def export_unified_csv(
                 "No low-cardinality grouping columns identified."
             )
 
-        # ── 6a. File-level totals ────────────────────────────
-
-        blank()
-        rows.append(["--- FILE-LEVEL ROLLUP ---"])
-        blank()
-
-        # Header: label | col1_legacy | col1_new | col2_legacy ...
-        header = ["metric"]
-        for col in num_cols:
-            header += [f"{col} [LEGACY]", f"{col} [NEW]"]
-        rows.append(header)
-
-        # Sum row
-        sum_row = ["SUM"]
-        for col in num_cols:
-            s = ft[col]
-            match_flag = "" if s["sum_match"] else " !"
-            sum_row += [
-                str(s["legacy_sum"]) + match_flag,
-                str(s["new_sum"])    + match_flag,
-            ]
-        rows.append(sum_row)
-
-        # Average row
-        avg_row = ["AVERAGE"]
-        for col in num_cols:
-            s = ft[col]
-            match_flag = "" if s["avg_match"] else " !"
-            avg_row += [
-                str(round(s["legacy_avg"], 6)) + match_flag,
-                str(round(s["new_avg"],    6)) + match_flag,
-            ]
-        rows.append(avg_row)
-
-        # Count (parsed) row
-        cnt_row = ["COUNT (parsed)"]
-        for col in num_cols:
-            s = ft[col]
-            cnt_row += [s["legacy_count"], s["new_count"]]
-        rows.append(cnt_row)
-
-        # Skipped (non-parseable) row — only shown when any exist
-        any_skipped = any(
-            ft[col]["legacy_skipped"] > 0
-            or ft[col]["new_skipped"] > 0
-            for col in num_cols
-        )
-        if any_skipped:
-            skip_row = ["COUNT (skipped — non-numeric values)"]
-            for col in num_cols:
-                s = ft[col]
-                skip_row += [s["legacy_skipped"], s["new_skipped"]]
-            rows.append(skip_row)
-
-        # Flag mismatches
-        mismatched_cols = [
-            col for col in num_cols
-            if not ft[col]["sum_match"] or not ft[col]["avg_match"]
-        ]
-        if mismatched_cols:
-            summary_line(
-                f"ROLLUP MISMATCH on {len(mismatched_cols)} column(s): "
-                + ", ".join(mismatched_cols)
-                + ". Cells marked with ' !' indicate a difference."
-            )
-        else:
-            summary_line(
-                "All numeric column totals and averages match "
-                "between legacy and new files."
-            )
-
-        # ── 6b. Grouped rollups ──────────────────────────────
-
-        if grp_cols:
-
+        def write_numeric_rollup_section(title, totals, grouped_totals, include_grouped_values=True):
             blank()
-            rows.append(["--- GROUPED ROLLUPS ---"])
+            rows.append([f"--- {title} ---"])
+            blank()
 
-            for g_col in grp_cols:
+            header = ["metric"]
+            for col in num_cols:
+                header += [f"{col} [LEGACY]", f"{col} [NEW]"]
+            rows.append(header)
 
-                blank()
-                rows.append([f"Grouped by: {g_col}"])
-                blank()
+            sum_row = ["SUM"]
+            for col in num_cols:
+                s = totals[col]
+                match_flag = "" if s["sum_match"] else " !"
+                sum_row += [
+                    str(s["legacy_sum"]) + match_flag,
+                    str(s["new_sum"]) + match_flag,
+                ]
+            rows.append(sum_row)
 
-                # Header row
-                g_header = [g_col]
+            avg_row = ["AVERAGE"]
+            for col in num_cols:
+                s = totals[col]
+                match_flag = "" if s["avg_match"] else " !"
+                avg_row += [
+                    str(round(s["legacy_avg"], 6)) + match_flag,
+                    str(round(s["new_avg"], 6)) + match_flag,
+                ]
+            rows.append(avg_row)
+
+            cnt_row = ["COUNT (parsed)"]
+            for col in num_cols:
+                s = totals[col]
+                cnt_row += [s["legacy_count"], s["new_count"]]
+            rows.append(cnt_row)
+
+            any_skipped = any(
+                totals[col]["legacy_skipped"] > 0
+                or totals[col]["new_skipped"] > 0
+                for col in num_cols
+            )
+            if any_skipped:
+                skip_row = ["COUNT (skipped — non-numeric values)"]
                 for col in num_cols:
-                    g_header += [
-                        f"{col} SUM [LEGACY]",
-                        f"{col} SUM [NEW]",
-                        f"{col} AVG [LEGACY]",
-                        f"{col} AVG [NEW]",
-                    ]
-                rows.append(g_header)
+                    s = totals[col]
+                    skip_row += [s["legacy_skipped"], s["new_skipped"]]
+                rows.append(skip_row)
 
-                grp_data = rollup["grouped_totals"].get(g_col, {})
+            mismatched_cols = [
+                col for col in num_cols
+                if not totals[col]["sum_match"] or not totals[col]["avg_match"]
+            ]
+            if mismatched_cols:
+                summary_line(
+                    f"ROLLUP MISMATCH on {len(mismatched_cols)} column(s): "
+                    + ", ".join(mismatched_cols)
+                    + ". Cells marked with ' !' indicate a difference."
+                )
+            else:
+                summary_line(
+                    "All numeric column totals and averages match "
+                    "between legacy and new files."
+                )
 
-                for g_val in sorted(grp_data.keys()):
+            if include_grouped_values and grp_cols:
+                blank()
+                rows.append([f"--- GROUPED ROLLUPS ({title}) ---"])
 
-                    col_stats = grp_data[g_val]
-                    data_row  = [g_val]
+                for g_col in grp_cols:
+                    blank()
+                    rows.append([f"Grouped by: {g_col}"])
+                    blank()
 
+                    g_header = [g_col]
                     for col in num_cols:
-
-                        cs = col_stats.get(col, {})
-
-                        l_sum = cs.get("legacy_sum", "")
-                        n_sum = cs.get("new_sum",    "")
-                        l_avg = cs.get("legacy_avg", "")
-                        n_avg = cs.get("new_avg",    "")
-
-                        sum_flag = (
-                            "" if cs.get("sum_match", True)
-                            else " !"
-                        )
-                        avg_flag = (
-                            "" if cs.get("avg_match", True)
-                            else " !"
-                        )
-
-                        data_row += [
-                            str(l_sum) + sum_flag,
-                            str(n_sum) + sum_flag,
-                            str(round(l_avg, 6)) + avg_flag
-                                if isinstance(l_avg, object)
-                                and hasattr(l_avg, "__round__")
-                                else str(l_avg) + avg_flag,
-                            str(round(n_avg, 6)) + avg_flag
-                                if isinstance(n_avg, object)
-                                and hasattr(n_avg, "__round__")
-                                else str(n_avg) + avg_flag,
+                        g_header += [
+                            f"{col} SUM [LEGACY]",
+                            f"{col} SUM [NEW]",
+                            f"{col} AVG [LEGACY]",
+                            f"{col} AVG [NEW]",
                         ]
+                    rows.append(g_header)
 
-                    rows.append(data_row)
+                    grp_data = grouped_totals.get(g_col, {})
+                    for g_val in sorted(grp_data.keys()):
+                        col_stats = grp_data[g_val]
+                        data_row = [g_val]
+
+                        for col in num_cols:
+                            cs = col_stats.get(col, {})
+                            l_sum = cs.get("legacy_sum", "")
+                            n_sum = cs.get("new_sum", "")
+                            l_avg = cs.get("legacy_avg", "")
+                            n_avg = cs.get("new_avg", "")
+
+                            sum_flag = "" if cs.get("sum_match", True) else " !"
+                            avg_flag = "" if cs.get("avg_match", True) else " !"
+
+                            data_row += [
+                                str(l_sum) + sum_flag,
+                                str(n_sum) + sum_flag,
+                                str(round(l_avg, 6)) + avg_flag
+                                if isinstance(l_avg, object) and hasattr(l_avg, "__round__")
+                                else str(l_avg) + avg_flag,
+                                str(round(n_avg, 6)) + avg_flag
+                                if isinstance(n_avg, object) and hasattr(n_avg, "__round__")
+                                else str(n_avg) + avg_flag,
+                            ]
+
+                        rows.append(data_row)
+
+        file_totals_with_errors = ft
+        file_totals_without_errors = rollup.get("file_totals_without_errors", ft)
+        grouped_totals_with_errors = rollup["grouped_totals"]
+        grouped_totals_without_errors = rollup.get("grouped_totals_without_errors", grouped_totals_with_errors)
+
+        write_numeric_rollup_section(
+            "FILE-LEVEL ROLLUP (WITH ERRORS)",
+            file_totals_with_errors,
+            grouped_totals_with_errors,
+            include_grouped_values=bool(grp_cols),
+        )
+
+        write_numeric_rollup_section(
+            "FILE-LEVEL ROLLUP (WITHOUT ERRORS)",
+            file_totals_without_errors,
+            grouped_totals_without_errors,
+            include_grouped_values=bool(grp_cols),
+        )
 
     # ─────────────────────────────────────────────────────────
     # Write
@@ -3294,12 +3303,23 @@ if __name__ == "__main__":
         + (", ".join(grouping_cols) if grouping_cols else "(none)")
     )
 
+    error_legacy_indices = [
+        pair["legacy_index"]
+        for pair in results["detailed_results"]
+    ]
+    error_new_indices = [
+        pair["new_index"]
+        for pair in results["detailed_results"]
+    ]
+
     rollup = compute_rollups(
         legacy_df,
         new_df,
         numeric_cols,
         grouping_cols,
         config.null_token,
+        error_legacy_indices=error_legacy_indices,
+        error_new_indices=error_new_indices,
     )
 
     # --------------------------------------------------------
