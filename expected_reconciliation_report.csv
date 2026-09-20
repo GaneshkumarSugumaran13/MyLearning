@@ -1,0 +1,150 @@
+
+
+"### ENCODING ###"
+
+
+"field","value"
+"legacy_file","legacy_sample_30.csv"
+"legacy_encoding","ascii"
+"new_file","new_sample_30.csv"
+"new_encoding","ascii"
+">> Encodings match — no encoding difference detected."
+
+
+"### SCHEMA MISMATCHES (COLUMN NAME DIFFERENCES) ###"
+
+
+">> 1 column name difference(s) found. Legacy: [notes] | New: [remarks]"
+"position","legacy_column_name","new_column_name"
+"8","notes","remarks"
+
+
+"### COUNT MISMATCH ###"
+
+
+">> Row counts match — both files have 30 records."
+"metric","legacy","new"
+"total_records","30","30"
+"exact_matches","22","22"
+"mismatched_records","7",""
+"unresolved_legacy","1",""
+"new_only_records","","1"
+
+
+"### NEWLINE / EOL DIFFERENCES ###"
+
+
+">> File-level line endings match (LF)."
+"source","file_eol","CRLF_count","LF_count","CR_count"
+"legacy","LF","0","31","0"
+"new","LF","0","31","0"
+">> No embedded newlines found inside any field values."
+
+
+"### MISMATCHED DATA ###"
+
+
+">> Column 'category' (position 4): 1 distinct error type(s) across 1 mismatched record(s)."
+
+
+"category"
+"error_type: legacy='Partner' vs new='Retail' | occurrences=1"
+"record_id","customer","region","category","amount","quantity","status","notes"
+"[LEGACY]","R015","Customer 15","East","Partner","1555.00","9","PENDING","Order batch 15"
+"[NEW]","R015","Customer 15","East","Retail","1555.00","9","PENDING","Order batch 15"
+">> Column 'amount' (position 5): 3 distinct error type(s) across 3 mismatched record(s)."
+
+
+"amount"
+"error_type: legacy='1111.00' vs new='1200.00' | occurrences=1"
+"record_id","customer","region","category","amount","quantity","status","notes"
+"[LEGACY]","R003","Customer 03","East","Services","1111.00","5","PENDING","Order batch 03"
+"[NEW]","R003","Customer 03","East","Services","1200.00","5","PENDING","Order batch 03"
+
+
+"amount"
+"error_type: legacy='1259.00' vs new='1459.00' | occurrences=1"
+"record_id","customer","region","category","amount","quantity","status","notes"
+"[LEGACY]","R007","Customer 07","East","Wholesale","1259.00","9","ACTIVE","Order batch 07"
+"[NEW]","R007","Customer 07","East","Wholesale","1459.00","9","ACTIVE","Order batch 07"
+
+
+"amount"
+"error_type: legacy='1814.00' vs new='1700.00' | occurrences=1"
+"record_id","customer","region","category","amount","quantity","status","notes"
+"[LEGACY]","R022","Customer 22","South","Wholesale","1814.00","8","ACTIVE","Order batch 22"
+"[NEW]","R022","Customer 22","South","Wholesale","1700.00","8","ACTIVE","Order batch 22"
+">> Column 'quantity' (position 6): 1 distinct error type(s) across 1 mismatched record(s)."
+
+
+"quantity"
+"error_type: legacy='4' vs new='99' | occurrences=1"
+"record_id","customer","region","category","amount","quantity","status","notes"
+"[LEGACY]","R010","Customer 10","South","Partner","1370.00","4","ACTIVE","Order batch 10"
+"[NEW]","R010","Customer 10","South","Partner","1370.00","99","ACTIVE","Order batch 10"
+">> Column 'status' (position 7): 1 distinct error type(s) across 1 mismatched record(s)."
+
+
+"status"
+"error_type: legacy='PENDING' vs new='INACTIVE' | occurrences=1"
+"record_id","customer","region","category","amount","quantity","status","notes"
+"[LEGACY]","R012","Customer 12","West","Wholesale","1444.00","6","PENDING","Order batch 12"
+"[NEW]","R012","Customer 12","West","Wholesale","1444.00","6","INACTIVE","Order batch 12"
+">> Column 'notes / remarks' (position 8): 1 distinct error type(s) across 1 mismatched record(s)."
+
+
+"notes / remarks"
+"error_type: legacy='Order batch 18' vs new='Order batch 18 ' | occurrences=1"
+"record_id","customer","region","category","amount","quantity","status","notes"
+"[LEGACY]","R018","Customer 18","South","Services","1666.00","4","PENDING","Order batch 18"
+"[NEW]","R018","Customer 18","South","Services","1666.00","4","PENDING","Order batch 18 "
+
+
+"### NUMERIC ROLLUP VALIDATION ###"
+
+
+">> Numeric columns identified (1): amount (100% numeric)"
+">> Grouping columns identified (3): region, category, status"
+
+
+"--- FILE-LEVEL ROLLUP ---"
+
+
+"metric","amount [LEGACY]","amount [NEW]"
+"SUM","47205.00 !","47380.00 !"
+"AVERAGE","1573.500000 !","1579.333333 !"
+"COUNT (parsed)","30","30"
+">> ROLLUP MISMATCH on 1 column(s): amount. Cells marked with ' !' indicate a difference."
+
+
+"--- GROUPED ROLLUPS ---"
+
+
+"Grouped by: region"
+
+
+"region","amount SUM [LEGACY]","amount SUM [NEW]","amount AVG [LEGACY]","amount AVG [NEW]"
+"East","10885.00 !","11174.00 !","1555.000000 !","1596.285714 !"
+"North","12440.00","12440.00","1555.000000","1555.000000"
+"South","12736.00 !","12622.00 !","1592.000000 !","1577.750000 !"
+"West","11144.00","11144.00","1592.000000","1592.000000"
+
+
+"Grouped by: category"
+
+
+"category","amount SUM [LEGACY]","amount SUM [NEW]","amount AVG [LEGACY]","amount AVG [NEW]"
+"Online","9663.00","9663.00","1610.500000","1610.500000"
+"Partner","9885.00 !","8330.00 !","1647.500000 !","1666.000000 !"
+"Retail","8997.00 !","10552.00 !","1499.500000 !","1507.428571 !"
+"Services","9441.00 !","9530.00 !","1573.500000 !","1588.333333 !"
+"Wholesale","9219.00 !","9305.00 !","1536.500000 !","1550.833333 !"
+
+
+"Grouped by: status"
+
+
+"status","amount SUM [LEGACY]","amount SUM [NEW]","amount AVG [LEGACY]","amount AVG [NEW]"
+"ACTIVE","15365.00 !","15451.00 !","1536.500000 !","1545.100000 !"
+"INACTIVE","15735.00 !","17179.00 !","1573.500000 !","1561.727273 !"
+"PENDING","16105.00 !","14750.00 !","1610.500000 !","1638.888889 !"
