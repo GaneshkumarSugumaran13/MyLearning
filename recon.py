@@ -2803,20 +2803,23 @@ def export_unified_csv(
 
                         rows.append(data_row)
 
-                    mismatched_groups = [
-                        g_val for g_val in sorted(grp_data.keys())
-                        if any(
-                            not grp_data[g_val].get(c, {}).get("sum_match", True)
-                            or not grp_data[g_val].get(c, {}).get("avg_match", True)
-                            for c in num_cols
-                        )
-                    ]
+                    parts = []
+                    for g_val in sorted(grp_data.keys()):
+                        diff_cols = []
+                        for c in num_cols:
+                            cs = grp_data[g_val].get(c, {})
+                            if cs.get("sum_match", True) and cs.get("avg_match", True):
+                                continue
+                            delta = cs["new_sum"] - cs["legacy_sum"]
+                            diff_cols.append(f"{c} (sum diff {delta:+})")
+                        if diff_cols:
+                            parts.append(f"{g_val}: " + ", ".join(diff_cols))
+
                     rows.append([])      # single blank line
-                    if mismatched_groups:
+                    if parts:
                         summary_line(
-                            f"ROLLUP MISMATCH on {len(mismatched_groups)} "
-                            f"{g_col} value(s): "
-                            + ", ".join(mismatched_groups)
+                            f"ROLLUP MISMATCH grouped by {g_col} on {len(parts)} group(s): "
+                            + " | ".join(parts)
                             + ". Cells marked with ' !' indicate a difference."
                         )
                     else:

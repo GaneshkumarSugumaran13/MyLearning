@@ -78,7 +78,7 @@
 "[NEW]","2026-09-25 12:55:58.060","R015","Customer 15","East","Retail","1555.00","9","PENDING","Order batch 15"
 
 
-">> Column 'amount' (position 6): 5 distinct error type(s) across 12 mismatched record(s)."
+">> Column 'amount' (position 6): 6 distinct error type(s) across 12 mismatched record(s)."
 
 
 "amount"
@@ -96,10 +96,10 @@
 
 
 "amount"
-"error_type: STARTING_ZERO | first seen: legacy='1222.0000000' vs new='1222.00' | occurrences=3"
+"error_type: STARTING_ZERO | first seen: legacy='.00' vs new='0.00' | occurrences=1"
 "date","record_id","customer","region","category","amount","quantity","status","notes"
-"[LEGACY]","2026-09-25 12:55:58.0600000000","R006","Customer 06","South","Retail","1222.0000000","8","PENDING","Order batch 06"
-"[NEW]","2026-09-25 12:55:58.060","R006","Customer 06","South","Retail","1222.00","8","PENDING","Order batch 06"
+"[LEGACY]","2026-09-25 12:55:58.0600000000","R030","Customer 30","South","Partner",".00","8","PENDING","Order batch 30"
+"[NEW]","2026-09-25 12:55:58.060","R030","Customer 30","South","Partner","0.00","8","PENDING","Order batch 30"
 
 
 "amount"
@@ -107,6 +107,13 @@
 "date","record_id","customer","region","category","amount","quantity","status","notes"
 "[LEGACY]","2026-09-25 12:55:58.0600000000","R004","Customer 04","West","Online","1148.00","6","ACTIVE","Order batch 04"
 "[NEW]","2026-09-25 12:55:58.060","R004","Customer 04","West","Online","1,148.00","6","ACTIVE","Order batch 04"
+
+
+"amount"
+"error_type: TRAILING_ZEROS_ONLY | first seen: legacy='1222.0000000' vs new='1222.00' | occurrences=2"
+"date","record_id","customer","region","category","amount","quantity","status","notes"
+"[LEGACY]","2026-09-25 12:55:58.0600000000","R006","Customer 06","South","Retail","1222.0000000","8","PENDING","Order batch 06"
+"[NEW]","2026-09-25 12:55:58.060","R006","Customer 06","South","Retail","1222.00","8","PENDING","Order batch 06"
 
 
 "amount"
@@ -182,7 +189,7 @@
 "South","10626.0000000 !","10512.00 !","1328.250000 !","1314.000000 !"
 "West","9700.976 !","9996.982 !","1385.853714 !","1666.163667 !"
 
-">> ROLLUP MISMATCH on 3 region value(s): East, South, West. Cells marked with ' !' indicate a difference."
+">> ROLLUP MISMATCH grouped by region on 3 group(s): East: amount (sum diff +289.0042) | South: amount (sum diff -114.0000000) | West: amount (sum diff +296.006). Cells marked with ' !' indicate a difference."
 
 
 "Grouped by: category"
@@ -194,7 +201,7 @@
 "Services","9441.13 !","9530.128 !","1573.521667 !","1588.354667 !"
 "Wholesale","7775.00 !","9305.0000 !","1295.833333 !","1550.833333 !"
 
-">> ROLLUP MISMATCH on 5 category value(s): Online, Partner, Retail, Services, Wholesale. Cells marked with ' !' indicate a difference."
+">> ROLLUP MISMATCH grouped by category on 5 group(s): Online: amount (sum diff -1147.9918) | Partner: amount (sum diff -1555.00) | Retail: amount (sum diff +1555.0040000) | Services: amount (sum diff +88.998) | Wholesale: amount (sum diff +1530.0000). Cells marked with ' !' indicate a difference."
 
 
 "Grouped by: status"
@@ -204,7 +211,7 @@
 "INACTIVE","15735.00 !","17179.0000 !","1573.500000 !","1561.727273 !"
 "PENDING","12551.3660000 !","12640.37 !","1255.136600 !","1404.485556 !"
 
-">> ROLLUP MISMATCH on 3 status value(s): ACTIVE, INACTIVE, PENDING. Cells marked with ' !' indicate a difference."
+">> ROLLUP MISMATCH grouped by status on 3 group(s): ACTIVE: amount (sum diff -1061.9938) | INACTIVE: amount (sum diff +1444.0000) | PENDING: amount (sum diff +89.0040000). Cells marked with ' !' indicate a difference."
 
 
 "--- FILE-LEVEL ROLLUP (WITHOUT ERRORS) ---"
