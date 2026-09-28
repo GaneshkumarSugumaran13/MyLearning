@@ -1123,6 +1123,16 @@ def classify_difference(legacy_value: str, new_value: str) -> str:
     ):
         return "THOUSANDS_SEPARATOR"
 
+    # Leading zero before the decimal point: 0.003 vs .003
+    def _strip_lead_zero(s):
+        return _re.sub(r"^([+-]?)0+(?=\.)", r"\1", s.strip())
+
+    if (
+        legacy_value != new_value
+        and _strip_lead_zero(legacy_value) == _strip_lead_zero(new_value)
+    ):
+        return "STARTING_ZERO"
+
     l = split_frac(legacy_value)
     n = split_frac(new_value)
 
@@ -2645,17 +2655,27 @@ def export_unified_csv(
             "at every position."
         )
     else:
-        legacy_name_list = ", ".join(
-            d["legacy_column"] for d in col_diffs
-        )
-        new_name_list = ", ".join(
-            d["new_column"] for d in col_diffs
-        )
+        # legacy_name_list = ", ".join(
+        #     d["legacy_column"] for d in col_diffs
+        # )
+        # new_name_list = ", ".join(
+        #     d["new_column"] for d in col_diffs
+        # )
+
+        legacy_name_list = ", ".join(d["legacy_column"] or "" for d in col_diffs)
+        new_name_list = ", ".join(d["new_column"] or "" for d in col_diffs)
+
         summary_line(
             f"{len(col_diffs)} column name difference(s) found. "
             f"Legacy: [{legacy_name_list}] | "
             f"New: [{new_name_list}]"
         )
+
+        if summary_extra := [d for d in col_diffs if d["legacy_column"] is None or d["new_column"] is None]:
+            summary_line(
+                f"{len(summary_extra)} extra trailing column(s) excluded from comparison."
+            )
+
         rows.append(["position", "legacy_column_name", "new_column_name"])
         for d in col_diffs:
             rows.append([
@@ -2810,7 +2830,7 @@ def export_unified_csv(
             )
 
             blank()
-            
+
             summary_line(
                 f"Column '{col_label}' (position {position}): "
                 f"{type_count} distinct error type(s) across "
@@ -2977,7 +2997,7 @@ def export_unified_csv(
                 for g_col in grp_cols:
                     blank()
                     rows.append([f"Grouped by: {g_col}"])
-                    blank()
+                    rows.append([])      # single blank line
 
                     g_header = [g_col]
                     for col in num_cols:
@@ -3016,6 +3036,28 @@ def export_unified_csv(
                             ]
 
                         rows.append(data_row)
+
+                    mismatched_groups = [
+                        g_val for g_val in sorted(grp_data.keys())
+                        if any(
+                            not grp_data[g_val].get(c, {}).get("sum_match", True)
+                            or not grp_data[g_val].get(c, {}).get("avg_match", True)
+                            for c in num_cols
+                        )
+                    ]
+                    rows.append([])      # single blank line
+                    if mismatched_groups:
+                        summary_line(
+                            f"ROLLUP MISMATCH on {len(mismatched_groups)} "
+                            f"{g_col} value(s): "
+                            + ", ".join(mismatched_groups)
+                            + ". Cells marked with ' !' indicate a difference."
+                        )
+                    else:
+                        summary_line(
+                            f"All {g_col} group totals and averages match "
+                            "between legacy and new files."
+                        )
 
         file_totals_with_errors = ft
         file_totals_without_errors = rollup.get("file_totals_without_errors", ft)
@@ -3335,16 +3377,30 @@ if __name__ == "__main__":
         "column_count_match"
     ]:
 
-        raise ValueError(
-            "\nColumn count mismatch.\n"
-            f"Legacy columns = "
-            f"{structure_result['legacy_column_count']}\n"
-            f"New columns = "
-            f"{structure_result['new_column_count']}\n\n"
-            "Column position is being used as the "
-            "comparison basis, therefore the files "
-            "must have the same number of columns."
+        # raise ValueError(
+            # "\nColumn count mismatch.\n"
+            # f"Legacy columns = "
+            # f"{structure_result['legacy_column_count']}\n"
+            # f"New columns = "
+            # f"{structure_result['new_column_count']}\n\n"
+            # "Column position is being used as the "
+            # "comparison basis, therefore the files "
+            # "must have the same number of columns."
+
+        common = min(
+            structure_result["legacy_column_count"],
+            structure_result["new_column_count"],
         )
+        if not structure_result["column_count_match"]:
+            print(
+                f"\nWARNING: column count differs "
+                f"(legacy={structure_result['legacy_column_count']}, "
+                f"new={structure_result['new_column_count']}). "
+                f"Comparing first {common} columns only."
+            )
+        full_legacy_df, full_new_df = legacy_df, new_df
+        legacy_df = legacy_df.iloc[:, :common]
+        new_df = new_df.iloc[:, :common]
 
     # --------------------------------------------------------
     # 3. RECONCILE

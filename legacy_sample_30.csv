@@ -28,4 +28,4 @@ date,record_id,customer,region,category,amount,quantity,status,notes
 2026-09-25 12:55:58.0600000000,R027,Customer 27,East,Wholesale,1999.00,5,PENDING,Order batch 27
 2026-09-25 12:55:58.0600000000,R028,Customer 28,West,Services,2036.00,6,ACTIVE,Order batch 28
 2026-09-25 12:55:58.0600000000,R029,Customer 29,North,Online,2073.00,7,INACTIVE,Order batch 29
-2026-09-25 12:55:58.0600000000,R030,Customer 30,South,Partner,2110.00,8,PENDING,Order batch 30
+2026-09-25 12:55:58.0600000000,R030,Customer 30,South,Partner,.00,8,PENDING,Order batch 30
