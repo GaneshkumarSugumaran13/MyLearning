@@ -78,7 +78,7 @@
 "[NEW]","2026-09-25 12:55:58.060","R015","Customer 15","East","Retail","1555.00","9","PENDING","Order batch 15"
 
 
-">> Column 'amount' (position 6): 6 distinct error type(s) across 12 mismatched record(s)."
+">> Column 'amount' (position 6): 5 distinct error type(s) across 12 mismatched record(s)."
 
 
 "amount"
@@ -96,10 +96,10 @@
 
 
 "amount"
-"error_type: STARTING_ZERO | first seen: legacy='.00' vs new='0.00' | occurrences=1"
+"error_type: STARTING_ZERO | first seen: legacy='1222.0000000' vs new='1222.00' | occurrences=3"
 "date","record_id","customer","region","category","amount","quantity","status","notes"
-"[LEGACY]","2026-09-25 12:55:58.0600000000","R030","Customer 30","South","Partner",".00","8","PENDING","Order batch 30"
-"[NEW]","2026-09-25 12:55:58.060","R030","Customer 30","South","Partner","0.00","8","PENDING","Order batch 30"
+"[LEGACY]","2026-09-25 12:55:58.0600000000","R006","Customer 06","South","Retail","1222.0000000","8","PENDING","Order batch 06"
+"[NEW]","2026-09-25 12:55:58.060","R006","Customer 06","South","Retail","1222.00","8","PENDING","Order batch 06"
 
 
 "amount"
@@ -107,13 +107,6 @@
 "date","record_id","customer","region","category","amount","quantity","status","notes"
 "[LEGACY]","2026-09-25 12:55:58.0600000000","R004","Customer 04","West","Online","1148.00","6","ACTIVE","Order batch 04"
 "[NEW]","2026-09-25 12:55:58.060","R004","Customer 04","West","Online","1,148.00","6","ACTIVE","Order batch 04"
-
-
-"amount"
-"error_type: TRAILING_ZEROS_ONLY | first seen: legacy='1222.0000000' vs new='1222.00' | occurrences=2"
-"date","record_id","customer","region","category","amount","quantity","status","notes"
-"[LEGACY]","2026-09-25 12:55:58.0600000000","R006","Customer 06","South","Retail","1222.0000000","8","PENDING","Order batch 06"
-"[NEW]","2026-09-25 12:55:58.060","R006","Customer 06","South","Retail","1222.00","8","PENDING","Order batch 06"
 
 
 "amount"
