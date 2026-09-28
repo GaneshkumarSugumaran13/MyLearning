@@ -172,7 +172,6 @@
 
 "metric","amount [LEGACY]","amount [NEW]"
 "SUM","43652.9418000 !","44123.9520 !"
-"AVERAGE","1455.098060 !","1521.515586 !"
 "COUNT (parsed)","30","29"
 "COUNT (skipped — non-numeric values)","0","1"
 ">> ROLLUP MISMATCH on 1 column(s): amount. Cells marked with ' !' indicate a difference."
@@ -183,35 +182,46 @@
 
 "Grouped by: region"
 
-"region","amount SUM [LEGACY]","amount SUM [NEW]","amount AVG [LEGACY]","amount AVG [NEW]"
-"East","10885.9658 !","11174.97 !","1555.137971 !","1596.424286 !"
-"North","12440.00","12440.0000","1555.000000","1555.000000"
-"South","10626.0000000 !","10512.00 !","1328.250000 !","1314.000000 !"
-"West","9700.976 !","9996.982 !","1385.853714 !","1666.163667 !"
+"region","amount SUM [LEGACY]","amount SUM [NEW]"
+"East","10885.9658 !","11174.97 !"
+"North","12440.00","12440.0000"
+"South","10626.0000000 !","10512.00 !"
+"West","9700.976 !","9996.982 !"
 
-">> ROLLUP MISMATCH grouped by region on 3 group(s): East: amount (sum diff +289.0042) | South: amount (sum diff -114.0000000) | West: amount (sum diff +296.006). Cells marked with ' !' indicate a difference."
+">> ROLLUP MISMATCH grouped by region on 3 group/column combination(s). Cells marked with ' !' indicate a difference."
+">> region=East: amount sum diff +289.0042"
+">> region=South: amount sum diff -114.0000000"
+">> region=West: amount sum diff +296.006"
 
 
 "Grouped by: category"
 
-"category","amount SUM [LEGACY]","amount SUM [NEW]","amount AVG [LEGACY]","amount AVG [NEW]"
-"Online","9664.3318 !","8516.34 !","1610.721967 !","1703.268000 !"
-"Partner","7775.00 !","6220.00 !","1295.833333 !","1244.000000 !"
-"Retail","8997.4800000 !","10552.484 !","1499.580000 !","1507.497714 !"
-"Services","9441.13 !","9530.128 !","1573.521667 !","1588.354667 !"
-"Wholesale","7775.00 !","9305.0000 !","1295.833333 !","1550.833333 !"
+"category","amount SUM [LEGACY]","amount SUM [NEW]"
+"Online","9664.3318 !","8516.34 !"
+"Partner","7775.00 !","6220.00 !"
+"Retail","8997.4800000 !","10552.484 !"
+"Services","9441.13 !","9530.128 !"
+"Wholesale","7775.00 !","9305.0000 !"
 
-">> ROLLUP MISMATCH grouped by category on 5 group(s): Online: amount (sum diff -1147.9918) | Partner: amount (sum diff -1555.00) | Retail: amount (sum diff +1555.0040000) | Services: amount (sum diff +88.998) | Wholesale: amount (sum diff +1530.0000). Cells marked with ' !' indicate a difference."
+">> ROLLUP MISMATCH grouped by category on 5 group/column combination(s). Cells marked with ' !' indicate a difference."
+">> category=Online: amount sum diff -1147.9918"
+">> category=Partner: amount sum diff -1555.00"
+">> category=Retail: amount sum diff +1555.0040000"
+">> category=Services: amount sum diff +88.998"
+">> category=Wholesale: amount sum diff +1530.0000"
 
 
 "Grouped by: status"
 
-"status","amount SUM [LEGACY]","amount SUM [NEW]","amount AVG [LEGACY]","amount AVG [NEW]"
-"ACTIVE","15366.5758 !","14304.582 !","1536.657580 !","1589.398000 !"
-"INACTIVE","15735.00 !","17179.0000 !","1573.500000 !","1561.727273 !"
-"PENDING","12551.3660000 !","12640.37 !","1255.136600 !","1404.485556 !"
+"status","amount SUM [LEGACY]","amount SUM [NEW]"
+"ACTIVE","15366.5758 !","14304.582 !"
+"INACTIVE","15735.00 !","17179.0000 !"
+"PENDING","12551.3660000 !","12640.37 !"
 
-">> ROLLUP MISMATCH grouped by status on 3 group(s): ACTIVE: amount (sum diff -1061.9938) | INACTIVE: amount (sum diff +1444.0000) | PENDING: amount (sum diff +89.0040000). Cells marked with ' !' indicate a difference."
+">> ROLLUP MISMATCH grouped by status on 3 group/column combination(s). Cells marked with ' !' indicate a difference."
+">> status=ACTIVE: amount sum diff -1061.9938"
+">> status=INACTIVE: amount sum diff +1444.0000"
+">> status=PENDING: amount sum diff +89.0040000"
 
 
 "--- FILE-LEVEL ROLLUP (WITHOUT ERRORS) ---"
@@ -219,9 +229,8 @@
 
 "metric","amount [LEGACY]","amount [NEW]"
 "SUM","0","0"
-"AVERAGE","0.000000","0.000000"
 "COUNT (parsed)","0","0"
-">> All numeric column totals and averages match between legacy and new files."
+">> All numeric column totals match between legacy and new files."
 
 
 "--- GROUPED ROLLUPS (FILE-LEVEL ROLLUP (WITHOUT ERRORS)) ---"
@@ -229,23 +238,23 @@
 
 "Grouped by: region"
 
-"region","amount SUM [LEGACY]","amount SUM [NEW]","amount AVG [LEGACY]","amount AVG [NEW]"
+"region","amount SUM [LEGACY]","amount SUM [NEW]"
 
-">> All region group totals and averages match between legacy and new files."
+">> All region group totals match between legacy and new files."
 
 
 "Grouped by: category"
 
-"category","amount SUM [LEGACY]","amount SUM [NEW]","amount AVG [LEGACY]","amount AVG [NEW]"
+"category","amount SUM [LEGACY]","amount SUM [NEW]"
 
-">> All category group totals and averages match between legacy and new files."
+">> All category group totals match between legacy and new files."
 
 
 "Grouped by: status"
 
-"status","amount SUM [LEGACY]","amount SUM [NEW]","amount AVG [LEGACY]","amount AVG [NEW]"
+"status","amount SUM [LEGACY]","amount SUM [NEW]"
 
-">> All status group totals and averages match between legacy and new files."
+">> All status group totals match between legacy and new files."
 
 
 "### UNRESOLVED RECORDS ###"

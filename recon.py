@@ -2204,8 +2204,6 @@ def compute_rollups(
             n_sum   = sum(d for _, d in new_vals)
             l_count = len(legacy_vals)
             n_count = len(new_vals)
-            l_avg   = (l_sum / l_count) if l_count else Decimal(0)
-            n_avg   = (n_sum / n_count) if n_count else Decimal(0)
 
             totals[col] = {
                 "legacy_sum":     l_sum,
@@ -2214,10 +2212,7 @@ def compute_rollups(
                 "new_count":      n_count,
                 "legacy_skipped": l_skip,
                 "new_skipped":    n_skip,
-                "legacy_avg":     l_avg,
-                "new_avg":        n_avg,
                 "sum_match":      l_sum == n_sum,
-                "avg_match":      l_avg == n_avg,
             }
         return totals
 
@@ -2257,8 +2252,6 @@ def compute_rollups(
                     n_sum   = sum(d for _, d in nv)
                     l_count = len(lv)
                     n_count = len(nv)
-                    l_avg   = (l_sum / l_count) if l_count else Decimal(0)
-                    n_avg   = (n_sum / n_count) if n_count else Decimal(0)
 
                     col_stats[n_col] = {
                         "legacy_sum":     l_sum,
@@ -2267,10 +2260,7 @@ def compute_rollups(
                         "new_count":      n_count,
                         "legacy_skipped": l_skip,
                         "new_skipped":    n_skip,
-                        "legacy_avg":     l_avg,
-                        "new_avg":        n_avg,
                         "sum_match":      l_sum == n_sum,
-                        "avg_match":      l_avg == n_avg,
                     }
 
                 grouped_totals[g_col][g_val] = col_stats
@@ -2712,16 +2702,6 @@ def export_unified_csv(
                 ]
             rows.append(sum_row)
 
-            avg_row = ["AVERAGE"]
-            for col in num_cols:
-                s = totals[col]
-                match_flag = "" if s["avg_match"] else " !"
-                avg_row += [
-                    str(round(s["legacy_avg"], 6)) + match_flag,
-                    str(round(s["new_avg"], 6)) + match_flag,
-                ]
-            rows.append(avg_row)
-
             cnt_row = ["COUNT (parsed)"]
             for col in num_cols:
                 s = totals[col]
@@ -2742,8 +2722,9 @@ def export_unified_csv(
 
             mismatched_cols = [
                 col for col in num_cols
-                if not totals[col]["sum_match"] or not totals[col]["avg_match"]
+                if not totals[col]["sum_match"]
             ]
+
             if mismatched_cols:
                 summary_line(
                     f"ROLLUP MISMATCH on {len(mismatched_cols)} column(s): "
@@ -2752,7 +2733,7 @@ def export_unified_csv(
                 )
             else:
                 summary_line(
-                    "All numeric column totals and averages match "
+                    "All numeric column totals match "
                     "between legacy and new files."
                 )
 
@@ -2770,8 +2751,6 @@ def export_unified_csv(
                         g_header += [
                             f"{col} SUM [LEGACY]",
                             f"{col} SUM [NEW]",
-                            f"{col} AVG [LEGACY]",
-                            f"{col} AVG [NEW]",
                         ]
                     rows.append(g_header)
 
@@ -2782,49 +2761,37 @@ def export_unified_csv(
 
                         for col in num_cols:
                             cs = col_stats.get(col, {})
-                            l_sum = cs.get("legacy_sum", "")
-                            n_sum = cs.get("new_sum", "")
-                            l_avg = cs.get("legacy_avg", "")
-                            n_avg = cs.get("new_avg", "")
-
                             sum_flag = "" if cs.get("sum_match", True) else " !"
-                            avg_flag = "" if cs.get("avg_match", True) else " !"
-
                             data_row += [
-                                str(l_sum) + sum_flag,
-                                str(n_sum) + sum_flag,
-                                str(round(l_avg, 6)) + avg_flag
-                                if isinstance(l_avg, object) and hasattr(l_avg, "__round__")
-                                else str(l_avg) + avg_flag,
-                                str(round(n_avg, 6)) + avg_flag
-                                if isinstance(n_avg, object) and hasattr(n_avg, "__round__")
-                                else str(n_avg) + avg_flag,
+                                str(cs.get("legacy_sum", "")) + sum_flag,
+                                str(cs.get("new_sum", "")) + sum_flag,
                             ]
 
                         rows.append(data_row)
 
-                    parts = []
+                    mismatch_lines = []
                     for g_val in sorted(grp_data.keys()):
-                        diff_cols = []
                         for c in num_cols:
                             cs = grp_data[g_val].get(c, {})
-                            if cs.get("sum_match", True) and cs.get("avg_match", True):
+                            if cs.get("sum_match", True):
                                 continue
                             delta = cs["new_sum"] - cs["legacy_sum"]
-                            diff_cols.append(f"{c} (sum diff {delta:+})")
-                        if diff_cols:
-                            parts.append(f"{g_val}: " + ", ".join(diff_cols))
+                            mismatch_lines.append(
+                                f"{g_col}={g_val}: {c} sum diff {delta:+}"
+                            )
 
                     rows.append([])      # single blank line
-                    if parts:
+                    if mismatch_lines:
                         summary_line(
-                            f"ROLLUP MISMATCH grouped by {g_col} on {len(parts)} group(s): "
-                            + " | ".join(parts)
-                            + ". Cells marked with ' !' indicate a difference."
+                            f"ROLLUP MISMATCH grouped by {g_col} on "
+                            f"{len(mismatch_lines)} group/column combination(s). "
+                            "Cells marked with ' !' indicate a difference."
                         )
+                        for line in mismatch_lines:
+                            summary_line(line)
                     else:
                         summary_line(
-                            f"All {g_col} group totals and averages match "
+                            f"All {g_col} group totals match "
                             "between legacy and new files."
                         )
 
