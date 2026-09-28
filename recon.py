@@ -1133,10 +1133,11 @@ def compare_rows_raw(
 # DIFFERENCE CLASSIFICATION Helper
 # ============================================================
 
-def classify_difference(legacy_value: str, new_value: str) -> str:
+def _classify_core(legacy_value: str, new_value: str) -> str:
     """
-    Classify a raw difference for pattern-level grouping.
-    Verdict is never affected; every difference stays a mismatch.
+    Classify a raw difference (whitespace already handled by the
+    caller). Verdict is never affected; every difference stays a
+    mismatch.
 
     Only '.' is treated as a decimal point. ',' is never a decimal
     point, so thousands-separator differences (1,000.50 vs 1000.50)
@@ -1157,15 +1158,20 @@ def classify_difference(legacy_value: str, new_value: str) -> str:
         return "THOUSANDS_SEPARATOR"
 
     # Leading zero before the decimal point: 0.003 vs .003
+    _num_re = _re.compile(r"^[+-]?(\d+\.\d*|\.\d+)$")
+
     def _strip_lead_zero(s):
-        return _re.sub(r"^([+-]?)0+(?=\.)", r"\1", s.strip())
+        return _re.sub(r"^([+-]?)0+(?=\.)", r"\1", s)
 
     if (
-        legacy_value != new_value
+        _num_re.match(legacy_value)
+        and _num_re.match(new_value)
+        and legacy_value != new_value
         and _strip_lead_zero(legacy_value) == _strip_lead_zero(new_value)
     ):
         return "STARTING_ZERO"
 
+    # Decimal-fraction classes
     l = split_frac(legacy_value)
     n = split_frac(new_value)
 
@@ -1189,6 +1195,23 @@ def classify_difference(legacy_value: str, new_value: str) -> str:
         return "EXTRA_DIGITS"
 
     return "EXACT_VALUES"
+
+
+def classify_difference(legacy_value: str, new_value: str) -> str:
+    """
+    Public classifier. Whitespace is separated out first; if it
+    differs together with another difference, the class is
+    prefixed with WHITESPACE_AND_.
+    """
+    l_core, n_core = legacy_value.strip(), new_value.strip()
+
+    if l_core == n_core:
+        return "WHITESPACE_ONLY"
+
+    if legacy_value != l_core or new_value != n_core:
+        return "WHITESPACE_AND_" + _classify_core(l_core, n_core)
+
+    return _classify_core(legacy_value, new_value)
 
 # ============================================================
 # DIFFERENCE SIGNATURE

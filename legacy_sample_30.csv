@@ -10,7 +10,7 @@ date,record_id,customer,region,category,amount,quantity,status,notes
 2026-09-25 12:55:58.0600000000,R009,Customer 09,North,Online,1333.00,3,PENDING,Order batch 09
 2026-09-25 12:55:58.0600000000,R010,Customer 10,South,Partner,1370.00,4,ACTIVE,Order batch 10
 2026-09-25 12:55:58.0600000000,R011,Customer 11,East,Retail,1407.00,5,INACTIVE,Order batch 11
-2026-09-25 12:55:58.0600000000,R012,Customer 12,West,Wholesale,1444.00,6,PENDING,Order batch 12
+2026-09-25 12:55:58.0600000000,R012,Customer 12,West,Wholesale, .00,6,PENDING,Order batch 12
 2026-09-25 12:55:58.0600000000,R013,Customer 13,North,Services,1481.00,7,ACTIVE,Order batch 13
 2026-09-25 12:55:58.0600000000,R014,Customer 14,South,Online,1518.00,8,INACTIVE,Order batch 14
 2026-09-25 12:55:58.0600000000,R015,Customer 15,East,Partner,1555.00,9,PENDING,Order batch 15
