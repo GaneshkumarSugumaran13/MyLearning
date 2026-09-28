@@ -21,14 +21,18 @@ class ReconciliationConfig:
     legacy_file: str
     new_file: str
 
-    delimiter: str = ","
+    delimiter: str = ""      # was ","
 
     # Per-file encodings.  legacy_encoding / new_encoding
     # take precedence; encoding is the shared fallback used
     # when neither per-file value is supplied.
     encoding: str = "utf-8"
+
     legacy_encoding: str = ""
     new_encoding: str = ""
+
+    legacy_delimiter: str = ""
+    new_delimiter: str = ""
 
     # Quote handling.
     # quotechar  : character used to wrap field values.
@@ -185,7 +189,7 @@ def resolve_encoding(
 # EOL / NEWLINE DETECTION
 # ============================================================
 
-def detect_eol(filepath: str, encoding: str) -> dict:
+def detect_eol(filepath: str, encoding: str, delimiter=",") -> dict:
     """
     Detect both file-level line endings and any embedded
     newlines inside field values.
@@ -241,6 +245,7 @@ def detect_eol(filepath: str, encoding: str) -> dict:
         df = pd.read_csv(
             filepath,
             encoding=encoding,
+            delimiter=delimiter,
             dtype=str,
             keep_default_na=False,
         )
@@ -267,6 +272,23 @@ def detect_eol(filepath: str, encoding: str) -> dict:
         "eol_counts":            eol_counts,
         "embedded_newline_rows": embedded,
     }
+
+# ============================================================
+# DELIMITER DETECTION
+# ============================================================
+
+def detect_delimiter(filepath: str, encoding: str) -> str:
+    import csv
+    with open(filepath, "r", encoding=encoding, newline="") as f:
+        sample = f.read(65_536)
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=",|;\t").delimiter
+    except csv.Error:
+        # Fallback: pick the most frequent candidate in the header line
+        header = sample.splitlines()[0] if sample else ""
+        counts = {d: header.count(d) for d in ",|;\t"}
+        best = max(counts, key=counts.get)
+        return best if counts[best] > 0 else ","
 
 # ============================================================
 # CSV LOADING
@@ -315,9 +337,20 @@ def load_csv(config: ReconciliationConfig):
     config.legacy_encoding = legacy_enc
     config.new_encoding = new_enc
 
+    if config.delimiter:
+        legacy_delim = new_delim = config.delimiter
+        print(f"  delimiter: {config.delimiter!r} (explicit)")
+    else:
+        legacy_delim = detect_delimiter(config.legacy_file, legacy_enc)
+        new_delim = detect_delimiter(config.new_file, new_enc)
+        print(f"  delimiter: legacy={legacy_delim!r}, new={new_delim!r} (auto-detected)")
+
+    config.legacy_delimiter = legacy_delim
+    config.new_delimiter = new_delim
+
     legacy_df = pd.read_csv(
         config.legacy_file,
-        delimiter=config.delimiter,
+        delimiter=legacy_delim,
         encoding=legacy_enc,
         dtype=str,
         keep_default_na=False,
@@ -331,7 +364,7 @@ def load_csv(config: ReconciliationConfig):
 
     new_df = pd.read_csv(
         config.new_file,
-        delimiter=config.delimiter,
+        delimiter=new_delim,
         encoding=new_enc,
         dtype=str,
         keep_default_na=False,
@@ -3220,8 +3253,8 @@ def parse_args():
 
     parser.add_argument(
         "--delimiter",
-        default=",",
-        help="Field delimiter character (default: ',')",
+        default="",              # was ","
+        help="Field delimiter (auto-detected when omitted)",
     )
 
     parser.add_argument(
@@ -3431,11 +3464,13 @@ if __name__ == "__main__":
     legacy_eol = detect_eol(
         config.legacy_file,
         config.legacy_encoding,
+        config.legacy_delimiter,
     )
 
     new_eol = detect_eol(
         config.new_file,
         config.new_encoding,
+        config.new_delimiter,
     )
 
     print(

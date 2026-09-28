@@ -76,3 +76,5 @@ Key expected summary values:
 The blank lines are intentionally present in the expected report. Open the CSV as a text/CSV file rather than relying only on a spreadsheet preview, because spreadsheet applications may visually collapse or otherwise render blank CSV records differently.
 
 The requested spacing is represented by **two consecutive empty CSV records before/after applicable sections and between error-set blocks**.
+
+# python recon.py legacy.csv new.csv --delimiter "|"
