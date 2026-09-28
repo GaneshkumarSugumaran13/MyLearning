@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from itertools import combinations
 from typing import Any
 import difflib
+import codecs
 
 import chardet
 import pandas as pd
@@ -40,6 +41,7 @@ class ReconciliationConfig:
     new_file: str
 
     delimiter: str = ""      # was ","
+    precision_digits: int = 2
 
     # Per-file encodings.  legacy_encoding / new_encoding
     # take precedence; encoding is the shared fallback used
@@ -48,6 +50,8 @@ class ReconciliationConfig:
 
     legacy_encoding: str = ""
     new_encoding: str = ""
+    legacy_encoding_label: str = ""
+    new_encoding_label: str = ""
 
     legacy_delimiter: str = ""
     new_delimiter: str = ""
@@ -117,7 +121,7 @@ class ReconciliationConfig:
 # 64 KB is enough for chardet to be confident on virtually
 # all real-world CSV files, including UTF-16 (which has a
 # BOM in the first two bytes that makes detection instant).
-_DETECT_SAMPLE_BYTES = 65_536
+_DETECT_SAMPLE_BYTES = 10_000_000
 
 
 def detect_encoding(
@@ -137,6 +141,11 @@ def detect_encoding(
     with open(safe_path(filepath), "rb") as f:
         raw = f.read(_DETECT_SAMPLE_BYTES)
 
+    if raw.startswith(codecs.BOM_UTF8):
+        return "utf-8-sig", 1.0
+    if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return "utf-16", 1.0
+
     result = chardet.detect(raw)
 
     encoding = (
@@ -151,23 +160,14 @@ def detect_encoding(
 
     return encoding, confidence
 
-
 def resolve_encoding(
     explicit: str,
     filepath: str,
     label: str,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
 
     """
-    Return (encoding_to_use, detection_source).
-
-    detection_source is one of:
-        "explicit"   – caller supplied a value
-        "detected"   – chardet inferred it
-        "default"    – chardet returned nothing; utf-8 assumed
-
-    Prints a one-line status so the operator can see what
-    was used for each file.
+    Return (codec_to_read_with, detection_source, raw_label).
     """
 
     if explicit:
@@ -177,31 +177,32 @@ def resolve_encoding(
             f"(explicit)"
         )
 
-        return explicit, "explicit"
+        return explicit, "explicit", explicit
 
     detected, confidence = detect_encoding(
         filepath
     )
 
+    is_ascii = detected.lower() == "ascii"
+    codec = "utf-8" if is_ascii else detected
+
     if confidence > 0.0:
 
         print(
-            f"  {label}: {detected} "
-            f"(auto-detected, "
-            f"confidence={confidence:.0%})"
+            f"  {label}: {codec} "
+            f"(auto-detected"
+            + (", chardet saw ascii-only content" if is_ascii else "")
+            + f", confidence={confidence:.0%})"
         )
 
-        return detected, "detected"
+        return codec, "detected", detected
 
     print(
         f"  {label}: utf-8 "
         f"(chardet inconclusive, defaulting)"
     )
 
-    return "utf-8", "default"
-
-
-
+    return "utf-8", "default", "utf-8"
 
 # ============================================================
 # EOL / NEWLINE DETECTION
@@ -338,13 +339,13 @@ def load_csv(config: ReconciliationConfig):
     # placeholder the user left unset.
     print("\nResolving file encodings:")
 
-    legacy_enc, _ = resolve_encoding(
+    legacy_enc, _, legacy_label = resolve_encoding(
         config.legacy_encoding,
         config.legacy_file,
         "legacy",
     )
 
-    new_enc, _ = resolve_encoding(
+    new_enc, _, new_label = resolve_encoding(
         config.new_encoding,
         config.new_file,
         "new   ",
@@ -354,6 +355,9 @@ def load_csv(config: ReconciliationConfig):
     # print_report, summary.csv) sees the resolved values.
     config.legacy_encoding = legacy_enc
     config.new_encoding = new_enc
+
+    config.legacy_encoding_label = legacy_label
+    config.new_encoding_label = new_label
 
     if config.delimiter:
         legacy_delim = new_delim = config.delimiter
@@ -1151,6 +1155,8 @@ def compare_rows_raw(
 # DIFFERENCE CLASSIFICATION Helper
 # ============================================================
 
+_PRECISION_DIGITS = 2
+
 def _classify_core(legacy_value: str, new_value: str) -> str:
     """
     Classify a raw difference (whitespace already handled by the
@@ -1208,9 +1214,18 @@ def _classify_core(legacy_value: str, new_value: str) -> str:
     if l_stripped == n_stripped:
         return "TRAILING_ZEROS_ONLY"
 
-    shorter, longer = sorted((l_stripped, n_stripped), key=len)
-    if longer.startswith(shorter):
-        return "EXTRA_DIGITS"
+    from decimal import Decimal, ROUND_DOWN
+    q = Decimal(1).scaleb(-_PRECISION_DIGITS)   # 0.01 for 2 digits
+    try:
+        l_dec = Decimal(legacy_value.strip())
+        n_dec = Decimal(new_value.strip())
+        # Agree on the first N decimals (truncated, not rounded)...
+        if l_dec.quantize(q, ROUND_DOWN) == n_dec.quantize(q, ROUND_DOWN):
+            # ...but at least one side carries non-zero digits beyond N
+            if l_dec != l_dec.quantize(q, ROUND_DOWN) or n_dec != n_dec.quantize(q, ROUND_DOWN):
+                return "PRECISION_MISMATCH"
+    except Exception:
+        pass
 
     return "EXACT_VALUES"
 
@@ -1668,14 +1683,14 @@ def reconcile(
         # Python Unicode strings after decoding, but the
         # flag is surfaced so reviewers are aware.
         "legacy_encoding":
-            legacy_enc_used,
+            config.legacy_encoding_label,
 
         "new_encoding":
-            new_enc_used,
+            config.new_encoding_label,
 
         "encoding_mismatch":
-            legacy_enc_used.lower()
-            != new_enc_used.lower(),
+            config.legacy_encoding_label.lower().replace("-sig", "")
+            != config.new_encoding_label.lower().replace("-sig", ""),
     }
 
     return {
@@ -3046,6 +3061,14 @@ def parse_args():
         ),
     )
 
+    parser.add_argument(
+        "--precision",
+        type=int,
+        default=2,
+        dest="precision_digits",
+        help="Decimal places used to detect PRECISION_MISMATCH (default: 2)",
+    )
+
     parser.set_defaults(doublequote=True)
 
     return parser.parse_args()
@@ -3056,6 +3079,8 @@ if __name__ == "__main__":
     args = parse_args()
 
     config = ReconciliationConfig(
+
+        precision_digits=args.precision_digits,
 
         legacy_file=args.legacy_file,
         legacy_encoding=args.legacy_encoding,
@@ -3082,6 +3107,8 @@ if __name__ == "__main__":
         # Rollup
         max_grouping_cardinality=args.max_grouping_cardinality,
     )
+
+    _PRECISION_DIGITS = config.precision_digits
 
     # --------------------------------------------------------
     # 1. LOAD CSVs

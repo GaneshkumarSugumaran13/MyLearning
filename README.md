@@ -78,3 +78,5 @@ The blank lines are intentionally present in the expected report. Open the CSV a
 The requested spacing is represented by **two consecutive empty CSV records before/after applicable sections and between error-set blocks**.
 
 # python recon.py legacy.csv new.csv --delimiter "|"
+
+# python recon.py legacy.csv new.csv --precision 3

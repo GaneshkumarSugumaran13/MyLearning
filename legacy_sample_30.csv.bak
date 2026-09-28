@@ -1,4 +1,4 @@
-﻿date,record_id,customer,region,category,amount,quantity,status,notes
+date,record_id,customer,region,category,amount,quantity,status,notes
 2026-09-25 12:55:58.0600000000,R001,Customer 01,North,Retail,1037.00,3,ACTIVE,Order batch 01
 2026-09-25 12:55:58.0600000000,R002,Customer 02,South,Wholesale,1074.00,4,INACTIVE,Order batch 02
 2026-09-25 12:55:58.0600000000,R003,Customer 03,East,Services,1111.00,5,PENDING,Order batch 03
@@ -14,18 +14,18 @@
 2026-09-25 12:55:58.0600000000,R013,Customer 13,North,Services,1481.00,7,ACTIVE,Order batch 13
 2026-09-25 12:55:58.0600000000,R014,Customer 14,South,Online,1518.00,8,INACTIVE,Order batch 14
 2026-09-25 12:55:58.0600000000,R015,Customer 15,East,Partner,1555.00,9,PENDING,Order batch 15
-2026-09-25 12:55:58.0600000000,R016,Customer 16,West,Retail,1592.48,2,ACTIVE,Order batch 16
+2026-09-25 12:55:58.0600000000,R016,Customer 16,West,Retail,1592.00,2,ACTIVE,Order batch 16
 2026-09-25 12:55:58.0600000000,R017,Customer 17,North,Wholesale,1629.00,3,INACTIVE,Order batch 17
 2026-09-25 12:55:58.0600000000,R018,Customer 18,South,Services,1666.00,4,PENDING,Order batch 18
-2026-09-25 12:55:58.0600000000,R019,Customer 19,East,Online,1703.9658,5,ACTIVE,Order batch 19
+2026-09-25 12:55:58.0600000000,R019,Customer 19,East,Online,1703.00,5,ACTIVE,Order batch 19
 2026-09-25 12:55:58.0600000000,R020,Customer 20,West,Partner,1740.00,6,INACTIVE,Order batch 20
 2026-09-25 12:55:58.0600000000,R021,Customer 21,North,Retail,1777.00,7,PENDING,Order batch 21
 2026-09-25 12:55:58.0600000000,R022,Customer 22,South,Wholesale,1814.00,8,ACTIVE,Order batch 22
 2026-09-25 12:55:58.0600000000,R023,Customer 23,East,Services,1851.00,9,INACTIVE,Order batch 23
-2026-09-25 12:55:58.0600000000,R024,Customer 24,West,Online,1888.366,2,PENDING,Order batch 24
+2026-09-25 12:55:58.0600000000,R024,Customer 24,West,Online,1888.00,2,PENDING,Order batch 24
 2026-09-25 12:55:58.0600000000,R025,Customer 25,North,Partner,1925.00,3,ACTIVE,Order batch 25
 2026-09-25 12:55:58.0600000000,R026,Customer 26,South,Retail,1962.00,4,INACTIVE,Order batch 26
 2026-09-25 12:55:58.0600000000,R027,Customer 27,East,Wholesale,1999.00,5,PENDING,Order batch 27
-2026-09-25 12:55:58.0600000000,R028,Customer 28,West,Services,2036.13,6,ACTIVE,Order batch 28
+2026-09-25 12:55:58.0600000000,R028,Customer 28,West,Services,2036.00,6,ACTIVE,Order batch 28
 2026-09-25 12:55:58.0600000000,R029,Customer 29,North,Online,2073.00,7,INACTIVE,Order batch 29
 2026-09-25 12:55:58.0600000000,R030,Customer 30,South,Partner,.00,8,PENDING,Order batch 30

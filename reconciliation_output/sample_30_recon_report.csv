@@ -5,10 +5,10 @@
 
 "field","value"
 "legacy_file","legacy_sample_30.csv"
-"legacy_encoding","ascii"
+"legacy_encoding","utf-8-sig"
 "new_file","new_sample_30.csv"
 "new_encoding","ascii"
-">> Encodings match — no encoding difference detected."
+">> ENCODING MISMATCH: legacy=utf-8-sig vs new=ascii. Comparison is valid — both files decoded to Unicode before comparison — but verify this is intentional."
 
 
 "### SCHEMA MISMATCHES (COLUMN NAME DIFFERENCES) ###"
@@ -64,8 +64,8 @@
 "customer"
 "error_type: EXACT_VALUES | first seen: legacy='Customer 24' vs new='Customer XX' | occurrences=1"
 "date","record_id","customer","region","category","amount","quantity","status","notes"
-"[LEGACY]","2026-09-25 12:55:58.0600000000","R024","Customer 24","West","Online","1888.00","2","PENDING","Order batch 24"
-"[NEW]","2026-09-25 12:55:58.060","R024","Customer XX","West","Online","1888.00","2","PENDING","Replacement order 24"
+"[LEGACY]","2026-09-25 12:55:58.0600000000","R024","Customer 24","West","Online","1888.366","2","PENDING","Order batch 24"
+"[NEW]","2026-09-25 12:55:58.060","R024","Customer XX","West","Online","1888.37","2","PENDING","Replacement order 24"
 
 
 ">> Column 'category' (position 5): 1 distinct error type(s) across 1 mismatched record(s)."
@@ -78,14 +78,21 @@
 "[NEW]","2026-09-25 12:55:58.060","R015","Customer 15","East","Retail","1555.00","9","PENDING","Order batch 15"
 
 
-">> Column 'amount' (position 6): 5 distinct error type(s) across 8 mismatched record(s)."
+">> Column 'amount' (position 6): 6 distinct error type(s) across 12 mismatched record(s)."
 
 
 "amount"
-"error_type: EXACT_VALUES | first seen: legacy='1111.00' vs new='1200.00' | occurrences=3"
+"error_type: EXACT_VALUES | first seen: legacy='1111.00' vs new='1200.00' | occurrences=6"
 "date","record_id","customer","region","category","amount","quantity","status","notes"
 "[LEGACY]","2026-09-25 12:55:58.0600000000","R003","Customer 03","East","Services","1111.00","5","PENDING","Order batch 03"
 "[NEW]","2026-09-25 12:55:58.060","R003","Customer 03","East","Services","1200.00","5","PENDING","Order batch 03"
+
+
+"amount"
+"error_type: PRECISION_MISMATCH | first seen: legacy='1592.48' vs new='1592.484' | occurrences=1"
+"date","record_id","customer","region","category","amount","quantity","status","notes"
+"[LEGACY]","2026-09-25 12:55:58.0600000000","R016","Customer 16","West","Retail","1592.48","2","ACTIVE","Order batch 16"
+"[NEW]","2026-09-25 12:55:58.060","R016","Customer 16","West","Retail","1592.484","2","ACTIVE","Order batch 16"
 
 
 "amount"
@@ -142,8 +149,8 @@
 "notes / remarks"
 "error_type: EXACT_VALUES | first seen: legacy='Order batch 24' vs new='Replacement order 24' | occurrences=1"
 "date","record_id","customer","region","category","amount","quantity","status","notes"
-"[LEGACY]","2026-09-25 12:55:58.0600000000","R024","Customer 24","West","Online","1888.00","2","PENDING","Order batch 24"
-"[NEW]","2026-09-25 12:55:58.060","R024","Customer XX","West","Online","1888.00","2","PENDING","Replacement order 24"
+"[LEGACY]","2026-09-25 12:55:58.0600000000","R024","Customer 24","West","Online","1888.366","2","PENDING","Order batch 24"
+"[NEW]","2026-09-25 12:55:58.060","R024","Customer XX","West","Online","1888.37","2","PENDING","Replacement order 24"
 
 
 "notes / remarks"
@@ -164,8 +171,8 @@
 
 
 "metric","amount [LEGACY]","amount [NEW]"
-"SUM","43651.0000000 !","44122.0000 !"
-"AVERAGE","1455.033333 !","1521.448276 !"
+"SUM","43652.9418000 !","44123.9520 !"
+"AVERAGE","1455.098060 !","1521.515586 !"
 "COUNT (parsed)","30","29"
 "COUNT (skipped — non-numeric values)","0","1"
 ">> ROLLUP MISMATCH on 1 column(s): amount. Cells marked with ' !' indicate a difference."
@@ -177,10 +184,10 @@
 "Grouped by: region"
 
 "region","amount SUM [LEGACY]","amount SUM [NEW]","amount AVG [LEGACY]","amount AVG [NEW]"
-"East","10885.00 !","11174.00 !","1555.000000 !","1596.285714 !"
+"East","10885.9658 !","11174.97 !","1555.137971 !","1596.424286 !"
 "North","12440.00","12440.0000","1555.000000","1555.000000"
 "South","10626.0000000 !","10512.00 !","1328.250000 !","1314.000000 !"
-"West","9700.00 !","9996.00 !","1385.714286 !","1666.000000 !"
+"West","9700.976 !","9996.982 !","1385.853714 !","1666.163667 !"
 
 ">> ROLLUP MISMATCH on 3 region value(s): East, South, West. Cells marked with ' !' indicate a difference."
 
@@ -188,10 +195,10 @@
 "Grouped by: category"
 
 "category","amount SUM [LEGACY]","amount SUM [NEW]","amount AVG [LEGACY]","amount AVG [NEW]"
-"Online","9663.00 !","8515.00 !","1610.500000 !","1703.000000 !"
+"Online","9664.3318 !","8516.34 !","1610.721967 !","1703.268000 !"
 "Partner","7775.00 !","6220.00 !","1295.833333 !","1244.000000 !"
-"Retail","8997.0000000 !","10552.00 !","1499.500000 !","1507.428571 !"
-"Services","9441.00 !","9530.00 !","1573.500000 !","1588.333333 !"
+"Retail","8997.4800000 !","10552.484 !","1499.580000 !","1507.497714 !"
+"Services","9441.13 !","9530.128 !","1573.521667 !","1588.354667 !"
 "Wholesale","7775.00 !","9305.0000 !","1295.833333 !","1550.833333 !"
 
 ">> ROLLUP MISMATCH on 5 category value(s): Online, Partner, Retail, Services, Wholesale. Cells marked with ' !' indicate a difference."
@@ -200,9 +207,9 @@
 "Grouped by: status"
 
 "status","amount SUM [LEGACY]","amount SUM [NEW]","amount AVG [LEGACY]","amount AVG [NEW]"
-"ACTIVE","15365.00 !","14303.00 !","1536.500000 !","1589.222222 !"
+"ACTIVE","15366.5758 !","14304.582 !","1536.657580 !","1589.398000 !"
 "INACTIVE","15735.00 !","17179.0000 !","1573.500000 !","1561.727273 !"
-"PENDING","12551.0000000 !","12640.00 !","1255.100000 !","1404.444444 !"
+"PENDING","12551.3660000 !","12640.37 !","1255.136600 !","1404.485556 !"
 
 ">> ROLLUP MISMATCH on 3 status value(s): ACTIVE, INACTIVE, PENDING. Cells marked with ' !' indicate a difference."
 
