@@ -1195,6 +1195,7 @@ def _classify_core(legacy_value: str, new_value: str) -> str:
         _num_re.match(legacy_value)
         and _num_re.match(new_value)
         and legacy_value != new_value
+        and _strip_lead_zero(legacy_value) != _strip_lead_zero(new_value)
         and _strip_trail_zero(_strip_lead_zero(legacy_value))
             == _strip_trail_zero(_strip_lead_zero(new_value))
     ):
