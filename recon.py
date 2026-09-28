@@ -6,10 +6,28 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from itertools import combinations
 from typing import Any
+import difflib
 
 import chardet
 import pandas as pd
 import re as _re
+
+# ============================================================
+# PATH SAFETY
+# ============================================================
+
+def safe_path(path: str, must_exist: bool = True) -> str:
+    """Resolve to an absolute canonical path and reject anything unsafe."""
+    real = os.path.realpath(os.path.abspath(path))
+    root = os.path.realpath(os.getcwd())
+
+    if os.path.commonpath([real, root]) != root:
+        raise ValueError(f"Path outside working directory: {path}")
+
+    if must_exist and not os.path.isfile(real):
+        raise FileNotFoundError(f"Not a file: {path}")
+
+    return real
 
 # ============================================================
 # CONFIGURATION
@@ -116,7 +134,7 @@ def detect_encoding(
     cannot make a determination.
     """
 
-    with open(filepath, "rb") as f:
+    with open(safe_path(filepath), "rb") as f:
         raw = f.read(_DETECT_SAMPLE_BYTES)
 
     result = chardet.detect(raw)
@@ -210,7 +228,7 @@ def detect_eol(filepath: str, encoding: str, delimiter=",") -> dict:
 
     # ---- file-level line endings (raw bytes) ----------------
 
-    with open(filepath, "rb") as f:
+    with open(safe_path(filepath), "rb") as f:
         raw = f.read()
 
     crlf_count = raw.count(b"\r\n")
@@ -279,7 +297,7 @@ def detect_eol(filepath: str, encoding: str, delimiter=",") -> dict:
 
 def detect_delimiter(filepath: str, encoding: str) -> str:
     import csv
-    with open(filepath, "r", encoding=encoding, newline="") as f:
+    with open(safe_path(filepath), "r", encoding=encoding, newline="") as f:
         sample = f.read(65_536)
     try:
         return csv.Sniffer().sniff(sample, delimiters=",|;\t").delimiter
@@ -1345,10 +1363,6 @@ def reconcile(
 
     difference_signature_counts = Counter()
 
-    samples_by_column = defaultdict(list)
-
-    samples_by_signature = defaultdict(list)
-
     # Per (position, legacy_value, new_value) error type.
     # Exactly 1 sample row pair stored per distinct type.
     column_error_type_counts = Counter()
@@ -1568,34 +1582,6 @@ def reconcile(
                 }
 
         # ----------------------------------------------------
-        # Signature samples
-        # ----------------------------------------------------
-
-        if len(
-            samples_by_signature[
-                signature
-            ]
-        ) < config.sample_limit:
-
-            samples_by_signature[
-                signature
-            ].append(
-                {
-                    "legacy_index":
-                        legacy_idx,
-
-                    "new_index":
-                        best_idx,
-
-                    "similarity":
-                        best_score,
-
-                    "differences":
-                        differences,
-                }
-            )
-
-        # ----------------------------------------------------
         # Detailed result
         # ----------------------------------------------------
 
@@ -1707,12 +1693,6 @@ def reconcile(
 
         "difference_signature_counts":
             difference_signature_counts,
-
-        "samples_by_column":
-            samples_by_column,
-
-        "samples_by_signature":
-            samples_by_signature,
 
         "unresolved_records":
             unresolved_records,
@@ -1914,323 +1894,6 @@ def print_report(
             f"{signature_text:<65}"
             f"{count:>10,}"
         )
-
-
-# ============================================================
-# SAMPLE REPORT
-# ============================================================
-
-def print_samples(
-    results,
-    limit=5,
-):
-
-    print("\n")
-    print("=" * 80)
-    print("SAMPLE MISMATCHES")
-    print("=" * 80)
-
-    samples = results[
-        "samples_by_column"
-    ]
-
-    for position in sorted(
-        samples.keys()
-    ):
-
-        records = samples[
-            position
-        ]
-
-        if not records:
-            continue
-
-        first = records[0]
-
-        print("\n")
-        print("-" * 80)
-
-        print(
-            f"POSITION {position} | "
-            f"LEGACY: {first['legacy_column']} | "
-            f"NEW: {first['new_column']}"
-        )
-
-        print("-" * 80)
-
-        for sample in records[:limit]:
-
-            print(
-                f"\nLegacy row : "
-                f"{sample['legacy_index']}"
-            )
-
-            print(
-                f"New row    : "
-                f"{sample['new_index']}"
-            )
-
-            print(
-                f"Similarity : "
-                f"{sample['similarity']:.2%}"
-            )
-
-            print(
-                f"Legacy     : "
-                f"{repr(sample['legacy_value'])}"
-            )
-
-            print(
-                f"New        : "
-                f"{repr(sample['new_value'])}"
-            )
-
-
-# ============================================================
-# EXPORT
-# ============================================================
-
-def export_results(
-    results,
-    structure_result,
-    output_directory,
-):
-
-    os.makedirs(
-        output_directory,
-        exist_ok=True,
-    )
-
-    # --------------------------------------------------------
-    # Overall summary
-    # --------------------------------------------------------
-
-    pd.DataFrame(
-        [
-            results["summary"]
-        ]
-    ).to_csv(
-        os.path.join(
-            output_directory,
-            "summary.csv",
-        ),
-        index=False,
-    )
-
-    # --------------------------------------------------------
-    # Column mismatch counts
-    # --------------------------------------------------------
-
-    rows = []
-
-    for position, count in (
-        results[
-            "column_mismatch_counts"
-        ].items()
-    ):
-
-        rows.append(
-            {
-                "position":
-                    position,
-
-                "mismatch_count":
-                    count,
-            }
-        )
-
-    pd.DataFrame(rows).sort_values(
-        "mismatch_count",
-        ascending=False,
-    ).to_csv(
-        os.path.join(
-            output_directory,
-            "column_mismatch_counts.csv",
-        ),
-        index=False,
-    )
-
-    # --------------------------------------------------------
-    # Difference signatures
-    # --------------------------------------------------------
-
-    rows = []
-
-    for signature, count in (
-        results[
-            "difference_signature_counts"
-        ].items()
-    ):
-
-        rows.append(
-            {
-                "difference_signature":
-                    " | ".join(
-                        f"{position}:{legacy_name}"
-                        for (
-                            position,
-                            legacy_name,
-                            new_name
-                        )
-                        in signature
-                    ),
-
-                "record_count":
-                    count,
-            }
-        )
-
-    pd.DataFrame(rows).sort_values(
-        "record_count",
-        ascending=False,
-    ).to_csv(
-        os.path.join(
-            output_directory,
-            "difference_signatures.csv",
-        ),
-        index=False,
-    )
-
-    # --------------------------------------------------------
-    # Detailed mismatches
-    # --------------------------------------------------------
-
-    pd.DataFrame(
-        results[
-            "detailed_results"
-        ]
-    ).to_csv(
-        os.path.join(
-            output_directory,
-            "detailed_mismatches.csv",
-        ),
-        index=False,
-    )
-
-    # --------------------------------------------------------
-    # Samples
-    # --------------------------------------------------------
-
-    sample_rows = []
-
-    for position, samples in (
-        results[
-            "samples_by_column"
-        ].items()
-    ):
-
-        for sample in samples:
-
-            sample_rows.append(
-                {
-                    "position":
-                        position,
-
-                    "legacy_column":
-                        sample[
-                            "legacy_column"
-                        ],
-
-                    "new_column":
-                        sample[
-                            "new_column"
-                        ],
-
-                    "legacy_row":
-                        sample[
-                            "legacy_index"
-                        ],
-
-                    "new_row":
-                        sample[
-                            "new_index"
-                        ],
-
-                    "similarity":
-                        sample[
-                            "similarity"
-                        ],
-
-                    "legacy_value":
-                        sample[
-                            "legacy_value"
-                        ],
-
-                    "new_value":
-                        sample[
-                            "new_value"
-                        ],
-                }
-            )
-
-    pd.DataFrame(
-        sample_rows
-    ).to_csv(
-        os.path.join(
-            output_directory,
-            "mismatch_samples.csv",
-        ),
-        index=False,
-    )
-
-    # --------------------------------------------------------
-    # Unresolved
-    # --------------------------------------------------------
-
-    pd.DataFrame(
-        results[
-            "unresolved_records"
-        ]
-    ).to_csv(
-        os.path.join(
-            output_directory,
-            "unresolved_records.csv",
-        ),
-        index=False,
-    )
-
-    # --------------------------------------------------------
-    # New-only
-    # --------------------------------------------------------
-
-    pd.DataFrame(
-        {
-            "new_index":
-                results[
-                    "new_only_records"
-                ]
-        }
-    ).to_csv(
-        os.path.join(
-            output_directory,
-            "new_only_records.csv",
-        ),
-        index=False,
-    )
-
-    # --------------------------------------------------------
-    # Column name differences
-    # --------------------------------------------------------
-
-    pd.DataFrame(
-        structure_result[
-            "column_differences"
-        ]
-    ).to_csv(
-        os.path.join(
-            output_directory,
-            "column_name_differences.csv",
-        ),
-        index=False,
-    )
-
-    print(
-        f"\nOutput written to: "
-        f"{output_directory}"
-    )
-
-
-
 
 
 # ============================================================
@@ -2622,8 +2285,24 @@ def compute_rollups(
         "grouped_totals_without_errors": grouped_totals_without_errors,
     }
 
+
 # ============================================================
 # UNIFIED SINGLE-FILE CSV REPORT
+# ============================================================
+
+def build_report_name(legacy_file: str, new_file: str) -> str:
+    # Compare bare file names (no folder, no .csv). The p/a prefix is the
+    # part that differs, so the longest common chunk is the shared name.
+    l = os.path.splitext(os.path.basename(legacy_file))[0]
+    n = os.path.splitext(os.path.basename(new_file))[0]
+
+    m = difflib.SequenceMatcher(None, l, n).find_longest_match(0, len(l), 0, len(n))
+    common = l[m.a:m.a + m.size].strip("_-. ")
+
+    return f"{common or 'reconciliation'}_recon_report.csv"
+
+# ============================================================
+# EXPORT CSV REPORT
 # ============================================================
 
 def export_unified_csv(
@@ -2649,14 +2328,12 @@ def export_unified_csv(
 
     import csv as _csv
 
-    os.makedirs(
-        config.output_directory,
-        exist_ok=True,
-    )
+    out_dir = safe_path(config.output_directory, must_exist=False)
+    os.makedirs(out_dir, exist_ok=True)
 
     out_path = os.path.join(
-        config.output_directory,
-        "reconciliation_report.csv",
+        out_dir,
+        build_report_name(config.legacy_file, config.new_file),
     )
 
     summary     = results["summary"]
@@ -3464,7 +3141,7 @@ if __name__ == "__main__":
                 f"new={structure_result['new_column_count']}). "
                 f"Comparing first {common} columns only."
             )
-        full_legacy_df, full_new_df = legacy_df, new_df
+  
         legacy_df = legacy_df.iloc[:, :common]
         new_df = new_df.iloc[:, :common]
 
@@ -3529,11 +3206,6 @@ if __name__ == "__main__":
         structure_result,
     )
 
-    print_samples(
-        results,
-        limit=config.sample_limit,
-    )
-
     # --------------------------------------------------------
     # 6. NUMERIC ROLLUP COMPUTATION
     # --------------------------------------------------------
@@ -3583,16 +3255,6 @@ if __name__ == "__main__":
         error_new_indices=error_new_indices,
     )
 
-    rollup = compute_rollups(
-        legacy_df,
-        new_df,
-        numeric_cols,
-        grouping_cols,
-        config.null_token,
-        error_legacy_indices=error_legacy_indices,
-        error_new_indices=error_new_indices,
-    )
-
     # --------------------------------------------------------
     # 7. UNIFIED SINGLE-FILE EXPORT
     # --------------------------------------------------------
@@ -3611,24 +3273,3 @@ if __name__ == "__main__":
     print(
         "\nReconciliation completed."
     )
-
-
-
-
-
-# -----------------------
-# Testing
-# -----------------------
-
-# from recon import matching_value, row_similarity, ReconciliationConfig
-# import pandas as pd
-
-# for a, b in [
-#     ("2024-03-01 10:22:33.1230000", "2024-03-01 10:22:33.123"),
-#     ("309.1237", "309.123"),
-#     ("1,000.50", "1000.50"),
-#     ("309.10", "309.1"),
-# ]:
-#     print(repr(a), "->", matching_value(a, "<NULL>"))
-#     print(repr(b), "->", matching_value(b, "<NULL>"))
-#     print()
