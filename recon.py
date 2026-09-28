@@ -9,7 +9,7 @@ from typing import Any
 
 import chardet
 import pandas as pd
-
+import re as _re
 
 # ============================================================
 # CONFIGURATION
@@ -42,7 +42,7 @@ class ReconciliationConfig:
     # --------------------------------------------------------
 
     # Minimum normalized similarity required for a candidate.
-    min_similarity: float = 0.80
+    min_similarity: float =  0.75 # 0.80
 
     # Best candidate must beat second-best candidate by this
     # margin. Otherwise record is considered ambiguous.
@@ -61,6 +61,14 @@ class ReconciliationConfig:
 
     # Maximum candidate rows to evaluate for one legacy row.
     max_candidates_per_row: int = 100
+
+    # Files at or below this many rows use relaxed blocking rules.
+    small_file_row_threshold: int = 50
+
+    # Minimum share of legacy values that must also exist in the
+    # new file (matching representation) for a column to be
+    # eligible for blocking.
+    min_cross_file_overlap: float = 0.5
 
     # --------------------------------------------------------
     # Reporting
@@ -423,6 +431,14 @@ def raw_value(
     return str(value)
 
 
+def _norm_trailing(s: str) -> str:
+    s = s.replace(",", "")
+    m = _re.match(r"^(.*?\d)\.(\d*?)0*(\D*)$", s)
+    if not m:
+        return s
+    head, frac, tail = m.groups()
+    return f"{head}.{frac}{tail}" if frac else f"{head}{tail}"
+
 # ============================================================
 # MATCHING VALUE
 # ============================================================
@@ -452,7 +468,7 @@ def matching_value(
     if value is None or pd.isna(value):
         return null_token
 
-    return str(value).strip().lower()
+    return _norm_trailing(str(value).strip().lower())   # was: str(value).strip().lower()
 
 
 # ============================================================
@@ -608,78 +624,94 @@ def find_exact_raw_matches(
 def select_blocking_columns(
     normalized_df: pd.DataFrame,
     config: ReconciliationConfig,
+    other_normalized_df: pd.DataFrame = None,
 ):
     """
-    Automatically identify useful columns for candidate
-    generation.
+    Pick blocking columns adaptively.
 
-    A useful blocking column should:
+    Large files : strict uniqueness / frequency filters.
+    Small files : frequency cap disabled (it is meaningless when
+                  every value is >= 1/N of the data), and if no
+                  column passes, the best-overlapping columns are
+                  used anyway so blocking is never empty.
 
-    1. Have reasonable uniqueness.
-    2. Not have one value appearing across most records.
-
-    NOTE:
-    These are NOT business keys.
-
-    They are only used to reduce the search space.
+    A column must overlap across files to be useful; a column
+    whose values never appear in the other file cannot produce
+    a candidate no matter how unique it is.
     """
-
-    candidates = []
 
     row_count = len(normalized_df)
 
     if row_count == 0:
-        return candidates
+        return []
 
-    for position, column in enumerate(
-        normalized_df.columns
-    ):
+    is_small = row_count <= config.small_file_row_threshold
 
-        value_counts = (
-            normalized_df[column]
-            .value_counts(dropna=False)
-        )
+    frequency_limit = (
+        1.0 if is_small else config.max_block_frequency
+    )
 
-        unique_count = len(value_counts)
+    scored = []
 
-        uniqueness_ratio = (
-            unique_count / row_count
-        )
+    for position, column in enumerate(normalized_df.columns):
+
+        value_counts = normalized_df.iloc[:, position].value_counts(dropna=False)
+
+        uniqueness_ratio = len(value_counts) / row_count
 
         largest_frequency = (
             value_counts.iloc[0] / row_count
-            if len(value_counts)
-            else 1.0
+            if len(value_counts) else 1.0
         )
 
-        if (
-            uniqueness_ratio
-            >= config.min_uniqueness_ratio
-            and
-            largest_frequency
-            <= config.max_block_frequency
-        ):
+        overlap = 1.0
 
-            candidates.append(
-                {
-                    "position": position,
-                    "column": column,
-                    "uniqueness_ratio":
-                        uniqueness_ratio,
-                    "largest_frequency":
-                        largest_frequency,
-                }
+        if (
+            other_normalized_df is not None
+            and position < other_normalized_df.shape[1]
+        ):
+            new_vals = set(normalized_df.iloc[:, position])
+            other_vals = set(other_normalized_df.iloc[:, position])
+            overlap = (
+                len(new_vals & other_vals)
+                / max(len(other_vals), 1)
             )
 
-    # Prefer highly unique columns.
-    candidates.sort(
-        key=lambda x:
-            x["uniqueness_ratio"],
+        scored.append(
+            {
+                "position": position,
+                "column": column,
+                "uniqueness_ratio": uniqueness_ratio,
+                "largest_frequency": largest_frequency,
+                "overlap": overlap,
+            }
+        )
+
+    strict = [
+        c for c in scored
+        if c["uniqueness_ratio"] >= config.min_uniqueness_ratio
+        and c["largest_frequency"] <= frequency_limit
+        and c["overlap"] >= config.min_cross_file_overlap
+    ]
+
+    if strict:
+        chosen = strict
+    else:
+        # Fallback: never leave blocking empty. Take the columns
+        # with the best overlap (ties broken by uniqueness).
+        chosen = sorted(
+            [c for c in scored if c["overlap"] > 0],
+            key=lambda c: (c["overlap"], c["uniqueness_ratio"]),
+            reverse=True,
+        )[: config.max_block_columns]
+
+    # Rank: overlap first (can it match?), then uniqueness.
+    chosen.sort(
+        key=lambda c: (c["overlap"], c["uniqueness_ratio"]),
         reverse=True,
     )
 
-    return candidates
-
+    return chosen
 
 # ============================================================
 # BUILD BLOCK INDEX
@@ -688,6 +720,7 @@ def select_blocking_columns(
 def build_block_indexes(
     normalized_new_df: pd.DataFrame,
     blocking_columns,
+    max_size: int = 3,
 ):
     """
     Build lookup indexes for single and multi-column
@@ -712,7 +745,7 @@ def build_block_indexes(
     ]
 
     max_size = min(
-        3,
+        max_size,
         len(column_positions),
     )
 
@@ -828,6 +861,18 @@ def generate_candidates(
 
                 break
 
+    # Safety net: blocking produced nothing. If the leftover set is
+    # small enough, evaluate all of it (similarity + ambiguity checks
+    # still decide whether a match is accepted).
+    if not candidate_scores:
+        remaining = [
+            idx for idx in normalized_new_df.index
+            if idx not in used_new_indexes
+        ]
+        if len(remaining) <= config.max_candidates_per_row:
+            for idx in remaining:
+                candidate_scores[idx] = 0
+
     candidates = list(
         candidate_scores.keys()
     )
@@ -851,6 +896,17 @@ def generate_candidates(
 # ============================================================
 # ROW SIMILARITY
 # ============================================================
+
+def raw_row_similarity(legacy_row, new_row, config):
+    total = len(legacy_row)
+    if total == 0:
+        return 0.0
+    matches = sum(
+        1
+        for a, b in zip(legacy_row.tolist(), new_row.tolist())
+        if raw_value(a, config.null_token) == raw_value(b, config.null_token)
+    )
+    return matches / total
 
 def row_similarity(
     legacy_row: pd.Series,
@@ -932,36 +988,21 @@ def find_best_candidate(
     scores = []
 
     for new_idx in candidate_indexes:
-
-        new_row = new_df.loc[
-            new_idx
-        ]
-
-        score = row_similarity(
-            legacy_row,
-            new_row,
-            config,
-        )
-
+        new_row = new_df.loc[new_idx]
         scores.append(
             (
                 new_idx,
-                score,
+                row_similarity(legacy_row, new_row, config),
+                raw_row_similarity(legacy_row, new_row, config),
             )
         )
 
-    scores.sort(
-        key=lambda x: x[1],
-        reverse=True,
-    )
+    scores.sort(key=lambda x: (x[1], x[2]), reverse=True)
 
-    best_idx, best_score = scores[0]
+    best_idx, best_score, best_raw = scores[0]
 
-    second_best_score = (
-        scores[1][1]
-        if len(scores) > 1
-        else 0.0
-    )
+    second_best_score = scores[1][1] if len(scores) > 1 else 0.0
+    second_best_raw   = scores[1][2] if len(scores) > 1 else 0.0
 
     if (
         best_score
@@ -977,20 +1018,10 @@ def find_best_candidate(
 
     if (
         len(scores) > 1
-        and
-        (
-            best_score
-            - second_best_score
-        )
-        < config.ambiguity_margin
+        and (best_score - second_best_score) < config.ambiguity_margin
+        and (best_raw - second_best_raw) < config.ambiguity_margin
     ):
-
-        return (
-            None,
-            best_score,
-            second_best_score,
-            "AMBIGUOUS",
-        )
+        return (None, best_score, second_best_score, "AMBIGUOUS")
 
     return (
         best_idx,
@@ -998,6 +1029,7 @@ def find_best_candidate(
         second_best_score,
         "MATCHED",
     )
+
 
 
 # ============================================================
@@ -1064,6 +1096,56 @@ def compare_rows_raw(
 
     return differences
 
+# ============================================================
+# DIFFERENCE CLASSIFICATION Helper
+# ============================================================
+
+def classify_difference(legacy_value: str, new_value: str) -> str:
+    """
+    Classify a raw difference for pattern-level grouping.
+    Verdict is never affected; every difference stays a mismatch.
+
+    Only '.' is treated as a decimal point. ',' is never a decimal
+    point, so thousands-separator differences (1,000.50 vs 1000.50)
+    always fall through to a separate class.
+    """
+    def split_frac(s):
+        m = _re.match(r"^(.*?\d)\.(\d+)(\D*)$", s.strip())
+        if not m:
+            return None
+        return m.group(1), m.group(2), m.group(3)
+
+    # Separator difference: same digits once commas are removed,
+    # but the raw strings differ only in comma presence/placement.
+    if (
+        ("," in legacy_value) != ("," in new_value)
+        and legacy_value.replace(",", "") == new_value.replace(",", "")
+    ):
+        return "THOUSANDS_SEPARATOR"
+
+    l = split_frac(legacy_value)
+    n = split_frac(new_value)
+
+    if l is None or n is None:
+        return "EXACT_VALUES"
+
+    l_head, l_frac, l_tail = l
+    n_head, n_frac, n_tail = n
+
+    if l_head != n_head or l_tail != n_tail:
+        return "EXACT_VALUES"
+
+    l_stripped = l_frac.rstrip("0")
+    n_stripped = n_frac.rstrip("0")
+
+    if l_stripped == n_stripped:
+        return "TRAILING_ZEROS_ONLY"
+
+    shorter, longer = sorted((l_stripped, n_stripped), key=len)
+    if longer.startswith(shorter):
+        return "EXTRA_DIGITS"
+
+    return "EXACT_VALUES"
 
 # ============================================================
 # DIFFERENCE SIGNATURE
@@ -1158,11 +1240,10 @@ def reconcile(
     # Blocking column selection
     # --------------------------------------------------------
 
-    blocking_columns = (
-        select_blocking_columns(
-            normalized_new,
-            config,
-        )
+    blocking_columns = select_blocking_columns(
+        normalized_new,
+        config,
+        normalized_legacy,
     )
 
     print("\nSelected blocking columns:")
@@ -1180,11 +1261,10 @@ def reconcile(
     # Build block indexes
     # --------------------------------------------------------
 
-    block_indexes = (
-        build_block_indexes(
-            normalized_new,
-            blocking_columns,
-        )
+    block_indexes = build_block_indexes(
+        normalized_new,
+        blocking_columns,
+        config.max_block_columns,
     )
 
     # --------------------------------------------------------
@@ -1244,6 +1324,13 @@ def reconcile(
             new_df,
             candidate_indexes,
             config,
+        )
+
+        print(
+            f"DEBUG legacy={legacy_idx} "
+            f"candidates={len(candidate_indexes)} "
+            f"best={best_score:.2f} second={second_best_score:.2f} "
+            f"status={status}"
         )
 
         # ----------------------------------------------------
@@ -1353,11 +1440,12 @@ def reconcile(
 
             # Key that uniquely identifies this error type:
             # same column AND same pair of values.
-            error_type_key = (
-                position,
+            pattern = classify_difference(
                 difference["legacy_value"],
                 difference["new_value"],
             )
+
+            error_type_key = (position, pattern, "", "")
 
             # Track count per error type
             column_error_type_counts[
@@ -1408,6 +1496,9 @@ def reconcile(
 
                     "new_full_row":
                         new_row.tolist(),
+
+                    "pattern":
+                        pattern,
                 }
 
         # ----------------------------------------------------
@@ -2177,8 +2268,6 @@ def identify_numeric_columns(
 # GROUPING COLUMN IDENTIFICATION
 # ============================================================
 
-import re as _re
-
 # Patterns that suggest a column is an ID or date — these are
 # excluded from grouping even if they are low-cardinality.
 _ID_PATTERNS   = _re.compile(
@@ -2694,14 +2783,14 @@ def export_unified_csv(
         # for the same column are consecutive.
         by_position = defaultdict(list)
         for key in samples_by_error_type:
-            position, legacy_val, new_val = key
+            position = key[0]
             by_position[position].append(key)
 
         for position in sorted(by_position.keys()):
 
             keys_for_col = sorted(
                 by_position[position],
-                key=lambda k: (k[1], k[2]),
+                key=lambda k: (k[1], k[2], k[3]),
             )
 
             sample_0 = samples_by_error_type[keys_for_col[0]]
@@ -2720,6 +2809,8 @@ def export_unified_csv(
                 for k in keys_for_col
             )
 
+            blank()
+            
             summary_line(
                 f"Column '{col_label}' (position {position}): "
                 f"{type_count} distinct error type(s) across "
@@ -2728,7 +2819,7 @@ def export_unified_csv(
 
             for key in keys_for_col:
 
-                position, legacy_val, new_val = key
+                position, pattern, legacy_val, new_val = key
                 sample = samples_by_error_type[key]
                 count  = column_error_type_counts[key]
 
@@ -2736,11 +2827,15 @@ def export_unified_csv(
                 # Column name as block header
                 rows.append([col_label])
                 # Error type summary
-                rows.append([
-                    f"error_type: legacy='{legacy_val}' "
-                    f"vs new='{new_val}' "
+
+                label = (
+                    f"error_type: {pattern} | "
+                    f"first seen: legacy='{sample['legacy_value']}' "
+                    f"vs new='{sample['new_value']}' "
                     f"| occurrences={count:,}"
-                ])
+                )
+
+                rows.append([label])
 
                 # Full header row (all column names)
                 rows.append(legacy_cols)
@@ -2942,6 +3037,39 @@ def export_unified_csv(
         )
 
     # ─────────────────────────────────────────────────────────
+    # 7. UNRESOLVED RECORDS
+    # ─────────────────────────────────────────────────────────
+
+    section("UNRESOLVED RECORDS")
+
+    unres = results["unresolved_records"]
+    new_only = results["new_only_records"]
+
+    if not unres and not new_only:
+        summary_line("No unresolved records.")
+    else:
+        summary_line(
+            f"{len(unres)} legacy record(s) could not be paired; "
+            f"{len(new_only)} new record(s) remain unpaired."
+        )
+
+        blank()
+        rows.append(["--- LEGACY (unresolved, as in file) ---"])
+        rows.append(["source", "file_row", "status", "best_similarity"] + legacy_cols)
+        for r in unres:
+            i = r["legacy_index"]
+            rows.append(
+                ["[LEGACY]", i + 2, r["status"], f"{r['best_similarity']:.2f}"]
+                + legacy_df.loc[i].tolist()
+            )
+
+        blank()
+        rows.append(["--- NEW (unpaired, as in file) ---"])
+        rows.append(["source", "file_row"] + new_cols)
+        for i in new_only:
+            rows.append(["[NEW]", i + 2] + new_df.loc[i].tolist())
+
+    # ─────────────────────────────────────────────────────────
     # Write
     # ─────────────────────────────────────────────────────────
 
@@ -3064,7 +3192,7 @@ def parse_args():
     parser.add_argument(
         "--min-similarity",
         type=float,
-        default=0.80,
+        default=-0.75, # 0.80,
         dest="min_similarity",
         help="Minimum similarity threshold (default: 0.80)",
     )
@@ -3232,6 +3360,12 @@ if __name__ == "__main__":
         config,
     )
 
+    s = results["summary"]
+    print("DEBUG SUMMARY:", {k: s[k] for k in (
+        "legacy_records", "new_records", "exact_raw_matches",
+        "candidate_raw_equal", "mismatched_records",
+        "unresolved_legacy_records", "new_only_records")})
+
     # --------------------------------------------------------
     # 4. EOL DETECTION
     # --------------------------------------------------------
@@ -3312,6 +3446,19 @@ if __name__ == "__main__":
         for pair in results["detailed_results"]
     ]
 
+    new_df_for_rollup = new_df.copy()
+    new_df_for_rollup.columns = legacy_df.columns
+
+    rollup = compute_rollups(
+        legacy_df,
+        new_df_for_rollup,
+        numeric_cols,
+        grouping_cols,
+        config.null_token,
+        error_legacy_indices=error_legacy_indices,
+        error_new_indices=error_new_indices,
+    )
+
     rollup = compute_rollups(
         legacy_df,
         new_df,
@@ -3340,3 +3487,24 @@ if __name__ == "__main__":
     print(
         "\nReconciliation completed."
     )
+
+
+
+
+
+# -----------------------
+# Testing
+# -----------------------
+
+# from recon import matching_value, row_similarity, ReconciliationConfig
+# import pandas as pd
+
+# for a, b in [
+#     ("2024-03-01 10:22:33.1230000", "2024-03-01 10:22:33.123"),
+#     ("309.1237", "309.123"),
+#     ("1,000.50", "1000.50"),
+#     ("309.10", "309.1"),
+# ]:
+#     print(repr(a), "->", matching_value(a, "<NULL>"))
+#     print(repr(b), "->", matching_value(b, "<NULL>"))
+#     print()
