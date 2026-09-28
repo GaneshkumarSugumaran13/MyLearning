@@ -2409,7 +2409,7 @@ def identify_grouping_columns(
         if not non_empty:
             continue
 
-        distinct = len(set(non_empty))
+        distinct = len({v.strip().lower() for v in non_empty})
 
         if distinct > config.max_grouping_cardinality:
             continue
@@ -2541,13 +2541,23 @@ def compute_rollups(
         for g_col in grouping_cols:
             grouped_totals[g_col] = {}
 
-            all_vals = set(legacy_frame[g_col].tolist()) | set(new_frame[g_col].tolist())
-            all_vals.discard("")
-            all_vals.discard(null_token)
+            l_keys = legacy_frame[g_col].astype(str).str.strip().str.lower()
+            n_keys = new_frame[g_col].astype(str).str.strip().str.lower()
 
-            for g_val in sorted(all_vals):
-                legacy_mask = legacy_frame[g_col] == g_val
-                new_mask    = new_frame[g_col]    == g_val
+            # display label = first trimmed spelling seen for each key
+            labels = {}
+            for raw in list(legacy_frame[g_col]) + list(new_frame[g_col]):
+                t = str(raw).strip()
+                labels.setdefault(t.lower(), t)
+
+            all_keys = set(l_keys.tolist()) | set(n_keys.tolist())
+            all_keys.discard("")
+            all_keys.discard(null_token.lower())
+
+            for g_key in sorted(all_keys):
+                g_val = labels[g_key]
+                legacy_mask = l_keys == g_key
+                new_mask    = n_keys == g_key
 
                 legacy_sub = legacy_frame[legacy_mask]
                 new_sub    = new_frame[new_mask]
