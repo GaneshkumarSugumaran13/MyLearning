@@ -1191,11 +1191,13 @@ def _classify_core(legacy_value: str, new_value: str) -> str:
         s = _re.sub(r"0+$", "", s) if "." in s else s
         return s[:-1] if s.endswith(".") else s
 
+    def _has_lead_zero(s):
+        return bool(_re.match(r"^[+-]?0+\.", s))
+
     if (
         _num_re.match(legacy_value)
         and _num_re.match(new_value)
-        and legacy_value != new_value
-        and _strip_lead_zero(legacy_value) != _strip_lead_zero(new_value)
+        and _has_lead_zero(legacy_value) != _has_lead_zero(new_value)   # replaces the wrong guard
         and _strip_trail_zero(_strip_lead_zero(legacy_value))
             == _strip_trail_zero(_strip_lead_zero(new_value))
     ):
