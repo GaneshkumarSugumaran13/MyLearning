@@ -163,6 +163,16 @@ def detect_encoding(
 
     return encoding, confidence
 
+def _decodes_cleanly(filepath: str, codec: str) -> bool:
+    try:
+        with open(safe_path(filepath), "r", encoding=codec, newline="") as f:
+            while f.read(1 << 20):
+                pass
+        return True
+    except (UnicodeDecodeError, LookupError):
+        return False
+
+
 def resolve_encoding(
     explicit: str,
     filepath: str,
@@ -171,40 +181,41 @@ def resolve_encoding(
 
     """
     Return (codec_to_read_with, detection_source, raw_label).
+    Auto-detected codecs are verified against the whole file and
+    fall back to cp1252 / latin-1 if decoding fails.
     """
 
     if explicit:
-
-        print(
-            f"  {label}: {explicit} "
-            f"(explicit)"
-        )
-
+        print(f"  {label}: {explicit} (explicit)")
         return explicit, "explicit", explicit
 
-    detected, confidence = detect_encoding(
-        filepath
-    )
+    detected, confidence = detect_encoding(filepath)
 
     is_ascii = detected.lower() == "ascii"
     codec = "utf-8" if is_ascii else detected
+    if confidence == 0.0:
+        codec = "utf-8"
+
+    if not _decodes_cleanly(filepath, codec):
+        for fallback in ("cp1252", "latin-1"):
+            if _decodes_cleanly(filepath, fallback):
+                print(
+                    f"  {label}: {fallback} "
+                    f"({codec} failed to decode the file; fell back)"
+                )
+                return fallback, "fallback", fallback
+        # nothing decodes cleanly; let pandas raise a clear error
+        return codec, "detected", detected
 
     if confidence > 0.0:
-
         print(
-            f"  {label}: {codec} "
-            f"(auto-detected"
+            f"  {label}: {codec} (auto-detected"
             + (", chardet saw ascii-only content" if is_ascii else "")
             + f", confidence={confidence:.0%})"
         )
-
         return codec, "detected", detected
 
-    print(
-        f"  {label}: utf-8 "
-        f"(chardet inconclusive, defaulting)"
-    )
-
+    print(f"  {label}: utf-8 (chardet inconclusive, defaulting)")
     return "utf-8", "default", "utf-8"
 
 # ============================================================
