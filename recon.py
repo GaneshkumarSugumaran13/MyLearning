@@ -1432,17 +1432,6 @@ def reconcile(
         normalized_legacy,
     )
 
-    print("\nSelected blocking columns:")
-
-    for item in blocking_columns:
-
-        print(
-            f"  Position {item['position'] + 1}: "
-            f"{item['column']} "
-            f"(uniqueness="
-            f"{item['uniqueness_ratio']:.2%})"
-        )
-
     # --------------------------------------------------------
     # Build block indexes
     # --------------------------------------------------------
@@ -1516,13 +1505,6 @@ def reconcile(
             candidate_indexes,
             config,
             id_positions,
-        )
-
-        print(
-            f"DEBUG legacy={legacy_idx} "
-            f"candidates={len(candidate_indexes)} "
-            f"best={best_score:.2f} second={second_best_score:.2f} "
-            f"status={status}"
         )
 
         # ----------------------------------------------------
@@ -2231,8 +2213,6 @@ def compute_rollups(
     numeric_cols: list,
     grouping_cols: list,
     null_token: str,
-    error_legacy_indices=None,
-    error_new_indices=None,
 ) -> dict:
     """
     Compute per-file and grouped rollups for all numeric columns.
@@ -2378,23 +2358,12 @@ def compute_rollups(
     file_totals = _summarise_numeric_frame(legacy_df, new_df)
     grouped_totals = _summarise_grouped_frame(legacy_df, new_df)
 
-    error_legacy_indices = set(error_legacy_indices or [])
-    error_new_indices = set(error_new_indices or [])
-
-    legacy_without_errors = legacy_df.loc[~legacy_df.index.isin(error_legacy_indices)] if error_legacy_indices else legacy_df
-    new_without_errors = new_df.loc[~new_df.index.isin(error_new_indices)] if error_new_indices else new_df
-
-    file_totals_without_errors = _summarise_numeric_frame(legacy_without_errors, new_without_errors)
-    grouped_totals_without_errors = _summarise_grouped_frame(legacy_without_errors, new_without_errors)
-
     return {
         "numeric_columns":  numeric_cols,
         "grouping_columns": grouping_cols,
         "parse_rates":      parse_rates,
         "file_totals":      file_totals,
         "grouped_totals":   grouped_totals,
-        "file_totals_without_errors": file_totals_without_errors,
-        "grouped_totals_without_errors": grouped_totals_without_errors,
     }
 
 
@@ -2411,7 +2380,7 @@ def build_report_name(legacy_file: str, new_file: str) -> str:
     m = difflib.SequenceMatcher(None, l, n).find_longest_match(0, len(l), 0, len(n))
     common = l[m.a:m.a + m.size].strip("_-. ")
 
-    return f"{common or 'reconciliation'}_recon_report.txt" # .csv earlier
+    return f"{common or 'reconciliation'}_recon_report.csv" # .txt if needed
 
 # ============================================================
 # EXPORT CSV REPORT
@@ -2912,7 +2881,7 @@ def export_unified_csv(
 
             if include_grouped_values and grp_cols:
                 blank()
-                rows.append([f"--- GROUPED ROLLUPS ({title}) ---"])
+                rows.append([f"--- GROUPED ROLLUPS ---"])
 
                 for g_col in grp_cols:
                     blank()
@@ -2968,22 +2937,10 @@ def export_unified_csv(
                             "between legacy and new files."
                         )
 
-        file_totals_with_errors = ft
-        file_totals_without_errors = rollup.get("file_totals_without_errors", ft)
-        grouped_totals_with_errors = rollup["grouped_totals"]
-        grouped_totals_without_errors = rollup.get("grouped_totals_without_errors", grouped_totals_with_errors)
-
         write_numeric_rollup_section(
-            "FILE-LEVEL ROLLUP (WITH ERRORS)",
-            file_totals_with_errors,
-            grouped_totals_with_errors,
-            include_grouped_values=bool(grp_cols),
-        )
-
-        write_numeric_rollup_section(
-            "FILE-LEVEL ROLLUP (WITHOUT ERRORS)",
-            file_totals_without_errors,
-            grouped_totals_without_errors,
+            "FILE-LEVEL ROLLUP",
+            ft,
+            rollup["grouped_totals"],
             include_grouped_values=bool(grp_cols),
         )
 
@@ -2994,22 +2951,22 @@ def export_unified_csv(
 
     ###### CSV ######
 
-    # with open(out_path, "w", newline="", encoding="utf-8") as f:
-    #     writer = _csv.writer(f, quoting=_csv.QUOTE_ALL)
-    #     for row in rows:
-    #         writer.writerow([str(c) for c in row])
-
-    # print(f"\nUnified report written to: {out_path}")
-    # return out_path
-
-    ###### TXT ######
-
     with open(out_path, "w", newline="", encoding="utf-8") as f:
+        writer = _csv.writer(f, quoting=_csv.QUOTE_ALL)
         for row in rows:
-            f.write(" | ".join(str(c) for c in row) + "\n")
+            writer.writerow([str(c) for c in row])
 
     print(f"\nUnified report written to: {out_path}")
     return out_path
+
+    ###### TXT ######
+
+    # with open(out_path, "w", newline="", encoding="utf-8") as f:
+    #     for row in rows:
+    #         f.write(" | ".join(str(c) for c in row) + "\n")
+
+    # print(f"\nUnified report written to: {out_path}")
+    # return out_path
 
 # ============================================================
 # MAIN
@@ -3390,19 +3347,6 @@ if __name__ == "__main__":
         + (", ".join(grouping_cols) if grouping_cols else "(none)")
     )
 
-    error_legacy_indices = [
-        pair["legacy_index"]
-        for pair in results["detailed_results"]
-    ] + [
-        r["legacy_index"]
-        for r in results["unresolved_records"]
-    ]
-
-    error_new_indices = [
-        pair["new_index"]
-        for pair in results["detailed_results"]
-    ] + list(results["new_only_records"])
-
     new_df_for_rollup = new_df.copy()
     new_df_for_rollup.columns = legacy_df.columns
 
@@ -3412,8 +3356,6 @@ if __name__ == "__main__":
         numeric_cols,
         grouping_cols,
         config.null_token,
-        error_legacy_indices=error_legacy_indices,
-        error_new_indices=error_new_indices,
     )
 
     # --------------------------------------------------------
