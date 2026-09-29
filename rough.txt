@@ -1,7 +1,33 @@
-def explain_ambiguous(legacy_row, new_df, cands, config, top=2):
-    scored = sorted(
-        ((i, row_similarity(legacy_row, new_df.loc[i], config)) for i in cands),
-        key=lambda x: x[1], reverse=True)[:top]
-    a, b = new_df.loc[scored[0][0]], new_df.loc[scored[1][0]]
-    diff_cols = [c for c in new_df.columns if a[c] != b[c]]
-    print(scored, "candidates differ in:", diff_cols or "NOTHING (identical rows)")
+Yes, it works smoothly for smaller column count files thanks to two safeguards in the code:
+
+1. **`min(config.ambiguity_margin, ...)` Capping:** For small files, `1.0 / total_cols` grows larger, but `min()` prevents it from exceeding your fixed cap (`0.05` / 5%).
+2. **Natural Scaling:** It automatically requires a higher, proportional similarity gap for narrow files.
+
+### Exact Behavior by File Width
+
+| Column Count | Formula: $\frac{1.0}{\text{cols}}$ | `min(0.05, ...)` Used | Required Gap | Equivalent Column Gap |
+| --- | --- | --- | --- | --- |
+| **5 columns** | $\frac{1}{5} = 0.20$ (20%) | **0.05** (capped) | **5%** | **0.25 columns** (Strict) |
+| **10 columns** | $\frac{1}{10} = 0.10$ (10%) | **0.05** (capped) | **5%** | **0.50 columns** |
+| **20 columns** | $\frac{1}{20} = 0.05$ (5%) | **0.05** (exact match) | **5%** | **1.00 column** |
+| **71 columns** | $\frac{1}{71} \approx 0.014$ (1.4%) | **0.014** (dynamic) | **1.4%** | **1.00 column** |
+| **150 columns** | $\frac{1}{150} \approx 0.0067$ (0.67%) | **0.0067** (dynamic) | **0.67%** | **1.00 column** |
+
+---
+
+### Optional Refinement for Very Small Files (< 10 columns)
+
+If you find that `0.25 columns` is too strict for very narrow files (e.g., a 4-column file capping at 5% instead of allowing a 1-column 25% gap), you can remove `min()` or set a floor column count:
+
+```python
+# Scale relative to columns without letting fixed 0.05 choke narrow files
+total_cols = len(legacy_row)
+if total_cols > 0:
+    # Allows 1 full column difference gap regardless of whether file has 4 or 100 columns
+    effective_margin = config.ambiguity_max_column_diff / total_cols 
+else:
+    effective_margin = config.ambiguity_margin
+
+```
+
+Using `config.ambiguity_max_column_diff / total_cols` directly keeps the rule constant across all dataset shapes: **"If candidate A beats candidate B by more than 1 column, accept candidate A."**
