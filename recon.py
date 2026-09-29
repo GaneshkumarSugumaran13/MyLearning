@@ -63,6 +63,9 @@ class ReconciliationConfig:
     quotechar: str = '"'
     doublequote: bool = True
 
+    legacy_bad_lines: list = None
+    new_bad_lines: list = None
+
     # --------------------------------------------------------
     # Candidate matching
     # --------------------------------------------------------
@@ -310,6 +313,42 @@ def detect_delimiter(filepath: str, encoding: str) -> str:
         return best if counts[best] > 0 else ","
 
 # ============================================================
+# BAD LINE DETECTION
+# ============================================================
+
+def _prescan_short_lines(filepath: str, encoding: str, delimiter: str, quotechar: str) -> list:
+    """
+    Detect rows with FEWER raw delimiter-separated tokens than the
+    header. Rows with MORE tokens are caught later by on_bad_lines.
+    Heuristic: a quoted field containing the delimiter is not
+    distinguished from a real column break, so this can rarely
+    over-flag a well-formed quoted row -- treat results as candidates.
+    """
+    import csv as _csv
+    with open(safe_path(filepath), "r", encoding=encoding, newline="") as f:
+        reader = _csv.reader(f, delimiter=delimiter, quotechar=quotechar)
+        rows = list(reader)
+
+    if not rows:
+        return []
+
+    expected = len(rows[0])
+    short = []
+    for i, row in enumerate(rows[1:], start=2):   # 1-based + header
+        if len(row) < expected:
+            short.append({"row": i, "field_count": len(row), "raw_line": delimiter.join(row)})
+    return short
+
+
+class _BadLineCollector:
+    def __init__(self):
+        self.skipped = []
+
+    def __call__(self, bad_line):
+        self.skipped.append(bad_line)
+        return None   # drop the row
+
+# ============================================================
 # CSV LOADING
 # ============================================================
 
@@ -370,6 +409,10 @@ def load_csv(config: ReconciliationConfig):
     config.legacy_delimiter = legacy_delim
     config.new_delimiter = new_delim
 
+    legacy_short = _prescan_short_lines(config.legacy_file, legacy_enc, legacy_delim, config.quotechar)
+    new_short = _prescan_short_lines(config.new_file, new_enc, new_delim, config.quotechar)
+
+    legacy_bad = _BadLineCollector()
     legacy_df = pd.read_csv(
         config.legacy_file,
         delimiter=legacy_delim,
@@ -382,8 +425,11 @@ def load_csv(config: ReconciliationConfig):
         quotechar=config.quotechar,
         doublequote=config.doublequote,
         quoting=0,              # csv.QUOTE_MINIMAL
+        engine="python",
+        on_bad_lines=legacy_bad,
     )
 
+    new_bad = _BadLineCollector()
     new_df = pd.read_csv(
         config.new_file,
         delimiter=new_delim,
@@ -393,7 +439,26 @@ def load_csv(config: ReconciliationConfig):
         quotechar=config.quotechar,
         doublequote=config.doublequote,
         quoting=0,              # csv.QUOTE_MINIMAL
+        engine="python",
+        on_bad_lines=new_bad,
     )
+
+    # Short rows aren't dropped by pandas (it pads them), so drop
+    # them here to keep both DataFrames free of partial rows.
+    legacy_short_rows = {b["row"] - 2 for b in legacy_short}   # 1-based file line -> 0-based df index
+    new_short_rows = {b["row"] - 2 for b in new_short}
+    if legacy_short_rows:
+        legacy_df = legacy_df.drop(index=[i for i in legacy_short_rows if i in legacy_df.index])
+    if new_short_rows:
+        new_df = new_df.drop(index=[i for i in new_short_rows if i in new_df.index])
+
+    config.legacy_bad_lines = legacy_bad.skipped + legacy_short
+    config.new_bad_lines = new_bad.skipped + new_short
+
+    if config.legacy_bad_lines:
+        print(f"  legacy: {len(config.legacy_bad_lines)} row(s) skipped (delimiter count mismatch)")
+    if config.new_bad_lines:
+        print(f"  new   : {len(config.new_bad_lines)} row(s) skipped (delimiter count mismatch)")
 
     return legacy_df, new_df
 
@@ -1019,6 +1084,7 @@ def find_best_candidate(
     new_df: pd.DataFrame,
     candidate_indexes,
     config: ReconciliationConfig,
+    id_positions=None,
 ):
     """
     Evaluate only blocked candidates.
@@ -1078,14 +1144,22 @@ def find_best_candidate(
     ):
         return (None, best_score, second_best_score, "AMBIGUOUS")
 
+    if id_positions:
+        new_row = new_df.loc[best_idx]
+        id_mismatch = any(
+            matching_value(legacy_row.iloc[p], config.null_token)
+            != matching_value(new_row.iloc[p], config.null_token)
+            for p in id_positions
+        )
+        if id_mismatch:
+            return (None, best_score, second_best_score, "UNRESOLVED")
+
     return (
         best_idx,
         best_score,
         second_best_score,
         "MATCHED",
     )
-
-
 
 # ============================================================
 # RAW COLUMN COMPARISON
@@ -1306,6 +1380,11 @@ def reconcile(
         new_df.columns
     )
 
+    id_positions = [
+        i for i, col in enumerate(legacy_columns)
+        if _ID_PATTERNS.search(col)
+    ]
+
     # --------------------------------------------------------
     # Matching representation
     # --------------------------------------------------------
@@ -1382,6 +1461,15 @@ def reconcile(
 
     unresolved_records = []
 
+    def _bad_line_text(b):
+        if isinstance(b, dict):
+            return b.get("raw_line", "")
+        return " ".join(str(x) for x in b)
+
+    skipped_new_blob = "\x1f".join(
+        _bad_line_text(b) for b in (getattr(config, "new_bad_lines", None) or [])
+    )
+
     column_mismatch_counts = Counter()
 
     difference_signature_counts = Counter()
@@ -1427,6 +1515,7 @@ def reconcile(
             new_df,
             candidate_indexes,
             config,
+            id_positions,
         )
 
         print(
@@ -1441,6 +1530,12 @@ def reconcile(
         # ----------------------------------------------------
 
         if status != "MATCHED":
+
+            likely_skipped = any(
+                str(legacy_row.iloc[p]).strip()
+                and str(legacy_row.iloc[p]).strip() in skipped_new_blob
+                for p in id_positions
+            ) if id_positions else False
 
             unresolved_records.append(
                 {
@@ -1458,6 +1553,10 @@ def reconcile(
 
                     "status":
                         status,
+
+                    "likely_cause":
+                        "possible counterpart skipped due to delimiter issue"
+                        if likely_skipped else "",
                 }
             )
 
@@ -2312,7 +2411,7 @@ def build_report_name(legacy_file: str, new_file: str) -> str:
     m = difflib.SequenceMatcher(None, l, n).find_longest_match(0, len(l), 0, len(n))
     common = l[m.a:m.a + m.size].strip("_-. ")
 
-    return f"{common or 'reconciliation'}_recon_report.csv"
+    return f"{common or 'reconciliation'}_recon_report.txt" # .csv earlier
 
 # ============================================================
 # EXPORT CSV REPORT
@@ -2358,6 +2457,10 @@ def export_unified_csv(
     column_error_type_counts = results["column_error_type_counts"]
 
     rows = []   # list of lists – written as CSV at the end
+
+    rows.append(["=" * 60])
+    rows.append(["RECONCILIATION RESULTS"])
+    rows.append(["=" * 60])
 
     # Keep visual separation consistent in the CSV report.
     # A "blank line" means an empty CSV record.  Use two empty
@@ -2477,7 +2580,66 @@ def export_unified_csv(
     rows.append(["new_only_records",  "", summary["new_only_records"]])
 
     # ─────────────────────────────────────────────────────────
-    # 4. NEWLINE / EOL
+    # 4. UNRESOLVED RECORDS
+    # ─────────────────────────────────────────────────────────
+
+    section("UNRESOLVED RECORDS")
+
+    unres = results["unresolved_records"]
+    new_only = results["new_only_records"]
+
+    if not unres and not new_only:
+        summary_line("No unresolved records.")
+    else:
+        summary_line(
+            f"{len(unres)} legacy record(s) could not be paired; "
+            f"{len(new_only)} new record(s) remain unpaired."
+        )
+
+        blank()
+        rows.append(["--- LEGACY (unresolved, as in file) ---"])
+        rows.append(["source", "file_row", "status", "best_similarity"] + legacy_cols)
+        for r in unres:
+            i = r["legacy_index"]
+            rows.append(
+                ["[LEGACY]", i + 2, r["status"], f"{r['best_similarity']:.2f}"]
+                + legacy_df.loc[i].tolist()
+            )
+
+        blank()
+        rows.append(["--- NEW (unpaired, as in file) ---"])
+        rows.append(["source", "file_row"] + new_cols)
+        for i in new_only:
+            rows.append(["[NEW]", i + 2] + new_df.loc[i].tolist())
+
+    # ─────────────────────────────────────────────────────────
+    # 5. BAD LINES (DELIMITER COUNT MISMATCH)
+    # ─────────────────────────────────────────────────────────
+
+    section("SKIPPED LINES (delimiter count mismatch)")
+    if not config.legacy_bad_lines and not config.new_bad_lines:
+        summary_line("No rows skipped due to delimiter-count anomalies.")
+    else:
+        summary_line(
+            f"{len(config.legacy_bad_lines or [])} legacy row(s), "
+            f"{len(config.new_bad_lines or [])} new row(s) skipped."
+        )
+
+        def _bad_line_row(b):
+            if isinstance(b, dict):
+                return b.get("row", ""), b.get("raw_line", str(b))
+            return "", ", ".join(str(x) for x in b)   # raw list from on_bad_lines
+
+        rows.append(["file", "row", "detail"])
+        for b in config.legacy_bad_lines or []:
+            row_no, detail = _bad_line_row(b)
+            rows.append(["legacy", row_no, detail])
+        for b in config.new_bad_lines or []:
+            row_no, detail = _bad_line_row(b)
+            rows.append(["new", row_no, detail])
+
+    # ─────────────────────────────────────────────────────────
+    # 6. NEWLINE / EOL
     # ─────────────────────────────────────────────────────────
 
     section("NEWLINE / EOL DIFFERENCES")
@@ -2543,7 +2705,7 @@ def export_unified_csv(
             rows.append(["(none)"])
 
     # ─────────────────────────────────────────────────────────
-    # 5. MISMATCHED DATA
+    # 7. MISMATCHED DATA
     # One block per (column, error-type).
     # Error type = distinct (legacy_value, new_value) pair.
     # Each block: column header row, then 1 legacy row,
@@ -2562,7 +2724,9 @@ def export_unified_csv(
             position = key[0]
             by_position[position].append(key)
 
-        for position in sorted(by_position.keys()):
+        positions_sorted = sorted(by_position.keys())
+
+        for position in positions_sorted:
 
             keys_for_col = sorted(
                 by_position[position],
@@ -2585,8 +2749,8 @@ def export_unified_csv(
                 for k in keys_for_col
             )
 
-            blank()
-
+            if position != positions_sorted[0]:
+                blank()
             summary_line(
                 f"Column '{col_label}' (position {position}): "
                 f"{type_count} distinct error type(s) across "
@@ -2638,7 +2802,7 @@ def export_unified_csv(
                 )
 
     # ─────────────────────────────────────────────────────────
-    # 6. NUMERIC ROLLUP VALIDATION
+    # 8. NUMERIC ROLLUP VALIDATION
     # ─────────────────────────────────────────────────────────
 
     rollup = rollup or results.get("rollup")
@@ -2686,6 +2850,15 @@ def export_unified_csv(
             blank()
             rows.append([f"--- {title} ---"])
             blank()
+
+            total_skipped = len(config.legacy_bad_lines or []) + len(config.new_bad_lines or [])
+            if total_skipped:
+                summary_line(
+                    f"NOTE: {total_skipped} row(s) skipped during load due to "
+                    "delimiter count mismatch (see SKIPPED LINES section) are "
+                    "excluded from this rollup — totals reflect only rows that "
+                    "were successfully parsed."
+                )
 
             header = ["metric"]
             for col in num_cols:
@@ -2814,47 +2987,26 @@ def export_unified_csv(
             include_grouped_values=bool(grp_cols),
         )
 
-    # ─────────────────────────────────────────────────────────
-    # 7. UNRESOLVED RECORDS
-    # ─────────────────────────────────────────────────────────
-
-    section("UNRESOLVED RECORDS")
-
-    unres = results["unresolved_records"]
-    new_only = results["new_only_records"]
-
-    if not unres and not new_only:
-        summary_line("No unresolved records.")
-    else:
-        summary_line(
-            f"{len(unres)} legacy record(s) could not be paired; "
-            f"{len(new_only)} new record(s) remain unpaired."
-        )
-
-        blank()
-        rows.append(["--- LEGACY (unresolved, as in file) ---"])
-        rows.append(["source", "file_row", "status", "best_similarity"] + legacy_cols)
-        for r in unres:
-            i = r["legacy_index"]
-            rows.append(
-                ["[LEGACY]", i + 2, r["status"], f"{r['best_similarity']:.2f}"]
-                + legacy_df.loc[i].tolist()
-            )
-
-        blank()
-        rows.append(["--- NEW (unpaired, as in file) ---"])
-        rows.append(["source", "file_row"] + new_cols)
-        for i in new_only:
-            rows.append(["[NEW]", i + 2] + new_df.loc[i].tolist())
 
     # ─────────────────────────────────────────────────────────
     # Write
     # ─────────────────────────────────────────────────────────
 
+    ###### CSV ######
+
+    # with open(out_path, "w", newline="", encoding="utf-8") as f:
+    #     writer = _csv.writer(f, quoting=_csv.QUOTE_ALL)
+    #     for row in rows:
+    #         writer.writerow([str(c) for c in row])
+
+    # print(f"\nUnified report written to: {out_path}")
+    # return out_path
+
+    ###### TXT ######
+
     with open(out_path, "w", newline="", encoding="utf-8") as f:
-        writer = _csv.writer(f, quoting=_csv.QUOTE_ALL)
         for row in rows:
-            writer.writerow([str(c) for c in row])
+            f.write(" | ".join(str(c) for c in row) + "\n")
 
     print(f"\nUnified report written to: {out_path}")
     return out_path
@@ -3241,11 +3393,15 @@ if __name__ == "__main__":
     error_legacy_indices = [
         pair["legacy_index"]
         for pair in results["detailed_results"]
+    ] + [
+        r["legacy_index"]
+        for r in results["unresolved_records"]
     ]
+
     error_new_indices = [
         pair["new_index"]
         for pair in results["detailed_results"]
-    ]
+    ] + list(results["new_only_records"])
 
     new_df_for_rollup = new_df.copy()
     new_df_for_rollup.columns = legacy_df.columns
