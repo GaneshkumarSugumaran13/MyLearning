@@ -1709,7 +1709,6 @@ def export_unified_csv(
         blank()
         rows.append(["--- FILE-LEVEL ROLLUP ---"])
 
-        # Check for file-level sum mismatches
         mismatched_file_cols = [col for col in num_cols if not ft[col]["sum_match"]]
         if mismatched_file_cols:
             summary_line(
@@ -1755,21 +1754,29 @@ def export_unified_csv(
             blank()
             rows.append(["--- GROUPED ROLLUPS BY COLUMN ---"])
 
-            # Check for grouped sum mismatches across all groups
-            grouped_mismatches = []
+            # Map grouped mismatches per grouping column into a table structure
+            grouped_mismatch_table = {}
             for g_col in grp_cols:
                 grp_data = gt.get(g_col, {})
+                diff_entries = []
                 for g_val, col_stats in grp_data.items():
-                    for col in num_cols:
-                        cs = col_stats.get(col, {})
-                        if not cs.get("sum_match", True):
-                            grouped_mismatches.append(f"Group '{g_col}' -> Value '{g_val}' ({col})")
+                    mismatched_cols = [
+                        col for col in num_cols
+                        if not col_stats.get(col, {}).get("sum_match", True)
+                    ]
+                    if mismatched_cols:
+                        cols_str = ", ".join(mismatched_cols)
+                        diff_entries.append(f"{g_val} ({cols_str})")
 
-            if grouped_mismatches:
-                summary_line(
-                    f"DIFFERENCES DETECTED IN GROUPED ROLLUPS: "
-                    + "; ".join(grouped_mismatches)
-                )
+                if diff_entries:
+                    grouped_mismatch_table[g_col] = " | ".join(diff_entries)
+
+            if grouped_mismatch_table:
+                summary_line("DIFFERENCES DETECTED IN GROUPED ROLLUPS:")
+                blank()
+                rows.append(["grouping_column", "mismatched_values"])
+                for g_col, m_vals in grouped_mismatch_table.items():
+                    rows.append([g_col, m_vals])
             else:
                 summary_line("ALL GROUPED ROLLUPS MATCH PERFECTLY ACROSS ALL CATEGORIES.")
 
