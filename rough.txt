@@ -1,33 +1,138 @@
-Yes, it works smoothly for smaller column count files thanks to two safeguards in the code:
-
-1. **`min(config.ambiguity_margin, ...)` Capping:** For small files, `1.0 / total_cols` grows larger, but `min()` prevents it from exceeding your fixed cap (`0.05` / 5%).
-2. **Natural Scaling:** It automatically requires a higher, proportional similarity gap for narrow files.
-
-### Exact Behavior by File Width
-
-| Column Count | Formula: $\frac{1.0}{\text{cols}}$ | `min(0.05, ...)` Used | Required Gap | Equivalent Column Gap |
-| --- | --- | --- | --- | --- |
-| **5 columns** | $\frac{1}{5} = 0.20$ (20%) | **0.05** (capped) | **5%** | **0.25 columns** (Strict) |
-| **10 columns** | $\frac{1}{10} = 0.10$ (10%) | **0.05** (capped) | **5%** | **0.50 columns** |
-| **20 columns** | $\frac{1}{20} = 0.05$ (5%) | **0.05** (exact match) | **5%** | **1.00 column** |
-| **71 columns** | $\frac{1}{71} \approx 0.014$ (1.4%) | **0.014** (dynamic) | **1.4%** | **1.00 column** |
-| **150 columns** | $\frac{1}{150} \approx 0.0067$ (0.67%) | **0.0067** (dynamic) | **0.67%** | **1.00 column** |
+Here are the exact changes required in your script to support a column-aware dynamic ambiguity margin.
 
 ---
 
-### Optional Refinement for Very Small Files (< 10 columns)
+### 1. In `ReconciliationConfig` Dataclass
 
-If you find that `0.25 columns` is too strict for very narrow files (e.g., a 4-column file capping at 5% instead of allowing a 1-column 25% gap), you can remove `min()` or set a floor column count:
+**Find:**
 
 ```python
-# Scale relative to columns without letting fixed 0.05 choke narrow files
-total_cols = len(legacy_row)
-if total_cols > 0:
-    # Allows 1 full column difference gap regardless of whether file has 4 or 100 columns
-    effective_margin = config.ambiguity_max_column_diff / total_cols 
-else:
-    effective_margin = config.ambiguity_margin
+    # Best candidate must beat second-best candidate by this
+    # margin. Otherwise record is considered ambiguous.
+    ambiguity_margin: float = 0.05
 
 ```
 
-Using `config.ambiguity_max_column_diff / total_cols` directly keeps the rule constant across all dataset shapes: **"If candidate A beats candidate B by more than 1 column, accept candidate A."**
+**Replace with:**
+
+```python
+    # Best candidate must beat second-best candidate by this
+    # margin. Otherwise record is considered ambiguous.
+    ambiguity_margin: float = 0.05
+
+    # Target maximum column differences allowed between best and second-best
+    # candidate before declaring ambiguity (e.g., 1.0 means ambiguity triggers
+    # only when scores differ by less than 1 full column's weight).
+    ambiguity_max_column_diff: float = 1.0
+
+```
+
+---
+
+### 2. In `find_best_candidate()` Function
+
+**Find:**
+
+```python
+    if (
+        len(scores) > 1
+        and (best_score - second_best_score) < config.ambiguity_margin
+        and (best_raw - second_best_raw) < config.ambiguity_margin
+    ):
+        return (None, best_score, second_best_score, "AMBIGUOUS")
+
+```
+
+**Replace with:**
+
+```python
+    # Dynamic margin: scale threshold so a gap of 'ambiguity_max_column_diff'
+    # columns (or fewer) triggers ambiguity. capped by absolute ambiguity_margin.
+    total_cols = len(legacy_row)
+    if total_cols > 0:
+        effective_margin = min(
+            config.ambiguity_margin,
+            config.ambiguity_max_column_diff / total_cols,
+        )
+    else:
+        effective_margin = config.ambiguity_margin
+
+    if (
+        len(scores) > 1
+        and (best_score - second_best_score) < effective_margin
+        and (best_raw - second_best_raw) < effective_margin
+    ):
+        return (None, best_score, second_best_score, "AMBIGUOUS")
+
+```
+
+---
+
+### 3. In `parse_args()` Function
+
+**Find:**
+
+```python
+    parser.add_argument(
+        "--ambiguity-margin",
+        type=float,
+        default=0.05,
+        dest="ambiguity_margin",
+        help=(
+            "Minimum gap between best and second-best "
+            "candidate (default: 0.05)"
+        ),
+    )
+
+```
+
+**Add immediately after:**
+
+```python
+    parser.add_argument(
+        "--ambiguity-max-col-diff",
+        type=float,
+        default=1.0,
+        dest="ambiguity_max_column_diff",
+        help=(
+            "Max column difference threshold to consider candidates "
+            "ambiguous (default: 1.0 column difference)"
+        ),
+    )
+
+```
+
+---
+
+### 4. In `if __name__ == "__main__":` Instantiation
+
+**Find:**
+
+```python
+        # Candidate matching
+        min_similarity=args.min_similarity,
+        ambiguity_margin=args.ambiguity_margin,
+        max_block_columns=args.max_block_columns,
+        max_candidates_per_row=args.max_candidates_per_row,
+
+```
+
+**Replace with:**
+
+```python
+        # Candidate matching
+        min_similarity=args.min_similarity,
+        ambiguity_margin=args.ambiguity_margin,
+        ambiguity_max_column_diff=args.ambiguity_max_column_diff,
+        max_block_columns=args.max_block_columns,
+        max_candidates_per_row=args.max_candidates_per_row,
+
+```
+
+---
+
+### How this works for your 71-column file
+
+* With `ambiguity_max_column_diff = 1.0`, the threshold dynamically adjusts to $\frac{1.0}{71} \approx 0.014$ (1.41%).
+* Candidates that differ by 2 or more columns from the top candidate will no longer trigger `AMBIGUOUS`.
+* If you want to tighten or loosen this behavior on CLI execution, pass `--ambiguity-max-col-diff 0.5` (half a column difference) or `--ambiguity-max-col-diff 2.0`.
