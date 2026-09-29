@@ -416,6 +416,8 @@ Legacy `latin-1`, new `utf-8`.
 
 **Result:** **ENCODING** section shows both, flags **ENCODING MISMATCH**. Comparison remains valid because both files are decoded to Unicode first; text that decodes differently (e.g. `é` mis-decoded as `Ã©`) will show up as `EXACT_VALUES` mismatches.
 
+**Automatic fallback:** when no encoding is passed, the detected encoding is verified against the whole file. If it fails to decode (for example a file detected as UTF-8 that contains a `£` byte), the tool falls back to `cp1252`, then `latin-1`, and prints the fallback in the "Resolving file encodings" output. The ENCODING section of the report shows the encoding actually used. Passing `--legacy-encoding` / `--new-encoding` explicitly always skips the check and uses the value you gave.
+
 ### 8.11 Different line endings
 
 Legacy uses CRLF, new uses LF (or mixed).
@@ -663,6 +665,7 @@ Internal constants: `_DETECT_SAMPLE_BYTES = 10_000_000` (bytes fed to chardet), 
 - Columns are compared positionally; if the same columns are simply reordered, they'll appear as mismatches.
 - Console output for the rollup is not printed; rollups appear only in the CSV report.
 - The docstring for `export_unified_csv` lists five sections; the report actually contains the eight sections described above.
+- Fallback decoding (`cp1252` / `latin-1`) reads any byte sequence without error, so a UTF-8 file with a few stray Latin-1 bytes will load, but the affected characters may look wrong in the report. If accented or currency characters look garbled, pass the encoding explicitly.
 
 ---
 
@@ -676,6 +679,16 @@ Wrong path, or the path is a directory.
 
 **Garbled characters (`Ã©`, `�`) in mismatches**
 Wrong encoding chosen. Pass `--legacy-encoding` / `--new-encoding` explicitly (`cp1252`, `latin-1`, `utf-8`, `utf-16`).
+
+**`UnicodeDecodeError: 'utf-8' codec can't decode byte 0xa3 in position N: invalid start byte`**
+One of the files is not UTF-8. Byte `0xa3` is the `£` sign in Windows-1252 / Latin-1. This happens when `--legacy-encoding utf-8` / `--new-encoding utf-8` was passed for a file that isn't UTF-8, or when auto-detection was inconclusive and defaulted to UTF-8. The "Resolving file encodings" lines printed at the start of the run show which file and which encoding were used. Pass the correct encoding for the failing file:
+
+```bash
+python recon.py legacy.csv new.csv --legacy-encoding cp1252 --min-similarity 0.75
+python recon.py legacy.csv new.csv --new-encoding cp1252 --min-similarity 0.75
+```
+
+Use `cp1252` first for files produced on Windows. If it also fails, use `latin-1`, which maps every byte and never fails to decode. Other common bytes: `0xe9` (`é`), `0x80` (`€` in cp1252), `0x92` (curly apostrophe in cp1252).
 
 **Everything shows as one column / wrong column count**
 Delimiter mis-detected. Pass `--delimiter` explicitly (`,`, `";"`, `"|"`, `$'\t'`).
