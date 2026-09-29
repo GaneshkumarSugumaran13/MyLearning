@@ -43,9 +43,7 @@ class ReconciliationConfig:
     delimiter: str = ""
     precision_digits: int = 2
 
-    # Per-file encodings
     encoding: str = "utf-8"
-
     legacy_encoding: str = ""
     new_encoding: str = ""
     legacy_encoding_label: str = ""
@@ -54,21 +52,15 @@ class ReconciliationConfig:
     legacy_delimiter: str = ""
     new_delimiter: str = ""
 
-    # Quote handling
     quotechar: str = '"'
     doublequote: bool = True
 
     legacy_bad_lines: list = None
     new_bad_lines: list = None
 
-    # --------------------------------------------------------
     # Candidate matching
-    # --------------------------------------------------------
-
     min_similarity: float = 0.75
     ambiguity_margin: float = 0.05
-
-    # Dynamic ambiguity threshold (max column score gap threshold)
     ambiguity_max_column_diff: float = 1.0
 
     max_block_columns: int = 3
@@ -78,10 +70,7 @@ class ReconciliationConfig:
     small_file_row_threshold: int = 50
     min_cross_file_overlap: float = 0.5
 
-    # --------------------------------------------------------
     # Reporting
-    # --------------------------------------------------------
-
     sample_limit: int = 5
     output_directory: str = "reconciliation_output"
     null_token: str = "<NULL>"
@@ -95,10 +84,7 @@ class ReconciliationConfig:
 _DETECT_SAMPLE_BYTES = 10_000_000
 
 
-def detect_encoding(
-    filepath: str,
-) -> tuple[str, float]:
-
+def detect_encoding(filepath: str) -> tuple[str, float]:
     with open(safe_path(filepath), "rb") as f:
         raw = f.read(_DETECT_SAMPLE_BYTES)
 
@@ -108,7 +94,6 @@ def detect_encoding(
         return "utf-16", 1.0
 
     result = chardet.detect(raw)
-
     encoding = result.get("encoding") or "utf-8"
     confidence = result.get("confidence") or 0.0
 
@@ -125,18 +110,12 @@ def _decodes_cleanly(filepath: str, codec: str) -> bool:
         return False
 
 
-def resolve_encoding(
-    explicit: str,
-    filepath: str,
-    label: str,
-) -> tuple[str, str, str]:
-
+def resolve_encoding(explicit: str, filepath: str, label: str) -> tuple[str, str, str]:
     if explicit:
         print(f"  {label}: {explicit} (explicit)")
         return explicit, "explicit", explicit
 
     detected, confidence = detect_encoding(filepath)
-
     is_ascii = detected.lower() == "ascii"
     codec = "utf-8" if is_ascii else detected
     if confidence == 0.0:
@@ -168,7 +147,6 @@ def resolve_encoding(
 # ============================================================
 
 def detect_eol(filepath: str, encoding: str, delimiter=",") -> dict:
-
     with open(safe_path(filepath), "rb") as f:
         raw = f.read()
 
@@ -195,7 +173,6 @@ def detect_eol(filepath: str, encoding: str, delimiter=",") -> dict:
         file_eol = "MIXED"
 
     embedded = []
-
     try:
         df = pd.read_csv(
             filepath,
@@ -215,7 +192,6 @@ def detect_eol(filepath: str, encoding: str, delimiter=",") -> dict:
                             "value": repr(val),
                         }
                     )
-
     except Exception:
         pass
 
@@ -275,7 +251,6 @@ class _BadLineCollector:
 # ============================================================
 
 def load_csv(config: ReconciliationConfig):
-
     print("\nResolving file encodings:")
 
     legacy_enc, _, legacy_label = resolve_encoding(
@@ -364,9 +339,6 @@ def audit_duplicate_rows(
     null_token: str,
     label: str,
 ) -> list[dict]:
-    """
-    Find duplicate rows for reporting WITHOUT dropping them from comparison.
-    """
     seen_fingerprints = {}
     duplicate_records = []
 
@@ -389,10 +361,7 @@ def audit_duplicate_rows(
 # STRUCTURAL VALIDATION
 # ============================================================
 
-def validate_structure(
-    legacy_df: pd.DataFrame,
-    new_df: pd.DataFrame,
-):
+def validate_structure(legacy_df: pd.DataFrame, new_df: pd.DataFrame):
     legacy_columns = list(legacy_df.columns)
     new_columns = list(new_df.columns)
 
@@ -422,7 +391,7 @@ def validate_structure(
 
 
 # ============================================================
-# RAW VALUE
+# RAW & MATCHING VALUES
 # ============================================================
 
 def raw_value(value: Any, null_token: str) -> str:
@@ -439,9 +408,6 @@ def _norm_trailing(s: str) -> str:
     head, frac, tail = m.groups()
     return f"{head}.{frac}{tail}" if frac else f"{head}{tail}"
 
-# ============================================================
-# MATCHING VALUE
-# ============================================================
 
 def matching_value(value: Any, null_token: str) -> str:
     if value is None or pd.isna(value):
@@ -449,20 +415,12 @@ def matching_value(value: Any, null_token: str) -> str:
     return _norm_trailing(str(value).strip().lower())
 
 
-# ============================================================
-# DATAFRAME MATCHING REPRESENTATION
-# ============================================================
-
 def build_matching_dataframe(df: pd.DataFrame, null_token: str):
     result = pd.DataFrame(index=df.index)
     for column in df.columns:
         result[column] = df[column].map(lambda x: matching_value(x, null_token))
     return result
 
-
-# ============================================================
-# ROW FINGERPRINT
-# ============================================================
 
 def row_fingerprint(row: pd.Series, null_token: str):
     values = [raw_value(value, null_token) for value in row.tolist()]
@@ -514,15 +472,11 @@ def find_exact_raw_matches(
 
     unmatched_new = [idx for idx in new_df.index if idx not in used_new]
 
-    return (
-        matched_pairs,
-        unmatched_legacy,
-        unmatched_new,
-    )
+    return matched_pairs, unmatched_legacy, unmatched_new
 
 
 # ============================================================
-# SELECT BLOCKING COLUMNS
+# SELECT BLOCKING COLUMNS & INDEXES
 # ============================================================
 
 def select_blocking_columns(
@@ -586,9 +540,6 @@ def select_blocking_columns(
 
     return chosen
 
-# ============================================================
-# BUILD BLOCK INDEX
-# ============================================================
 
 def build_block_indexes(
     normalized_new_df: pd.DataFrame,
@@ -611,7 +562,7 @@ def build_block_indexes(
 
 
 # ============================================================
-# GENERATE CANDIDATES
+# GENERATE CANDIDATES & ROW SIMILARITY
 # ============================================================
 
 def generate_candidates(
@@ -660,21 +611,6 @@ def generate_candidates(
     return candidates
 
 
-# ============================================================
-# ROW SIMILARITY
-# ============================================================
-
-def raw_row_similarity(legacy_row, new_row, config):
-    total = len(legacy_row)
-    if total == 0:
-        return 0.0
-    matches = sum(
-        1 for a, b in zip(legacy_row.tolist(), new_row.tolist())
-        if raw_value(a, config.null_token) == raw_value(b, config.null_token)
-    )
-    return matches / total
-
-
 def row_similarity(
     legacy_row: pd.Series,
     new_row: pd.Series,
@@ -693,7 +629,7 @@ def row_similarity(
 
 
 # ============================================================
-# BEST CANDIDATE (DYNAMIC MARGIN APPLIED TO ALL CANDIDATES)
+# BEST CANDIDATE (ADAPTIVE DECISION ENGINE INTEGRATED)
 # ============================================================
 
 def find_best_candidate(
@@ -709,37 +645,66 @@ def find_best_candidate(
     scores = []
     for new_idx in candidate_indexes:
         new_row = new_df.loc[new_idx]
-        scores.append(
-            (
-                new_idx,
-                row_similarity(legacy_row, new_row, config),
-                raw_row_similarity(legacy_row, new_row, config),
-            )
-        )
+        scores.append((new_idx, row_similarity(legacy_row, new_row, config)))
 
-    scores.sort(key=lambda x: (x[1], x[2]), reverse=True)
+    # Sort descending by normalized similarity
+    scores.sort(key=lambda x: x[1], reverse=True)
 
-    best_idx, best_score, best_raw = scores[0]
+    best_idx, best_score = scores[0]
     second_best_score = scores[1][1] if len(scores) > 1 else 0.0
-    second_best_raw = scores[1][2] if len(scores) > 1 else 0.0
 
-    if best_score < config.min_similarity:
+    total_cols = len(legacy_row)
+    if total_cols == 0:
+        return (None, 0.0, 0.0, "UNRESOLVED")
+
+    # ------------------------------------------------------------------
+    # 1. TIED DECISION ENGINE: Dynamic Floor & Adaptive Margin
+    # ------------------------------------------------------------------
+    score_gap = best_score - second_best_score
+
+    # Require wider score gaps for lower similarity candidates
+    confidence_multiplier = max(0.5, 1.5 - best_score)
+    base_col_margin = config.ambiguity_max_column_diff / total_cols
+    effective_margin = base_col_margin * confidence_multiplier
+
+    # Adaptive Floor: If candidate has no close runner-up (clear dominant winner),
+    # allow floor to drop by up to 0.10 to capture valid transformed records.
+    is_clear_winner = (len(scores) == 1) or (score_gap >= (2.0 / total_cols))
+    effective_min_similarity = (
+        (config.min_similarity - 0.10) if is_clear_winner else config.min_similarity
+    )
+
+    if best_score < effective_min_similarity:
         return (None, best_score, second_best_score, "UNRESOLVED")
 
-    # Dynamic threshold based on total columns
-    total_cols = len(legacy_row)
-    if total_cols > 0:
-        effective_margin = config.ambiguity_max_column_diff / total_cols
-    else:
-        effective_margin = config.ambiguity_margin
+    # ------------------------------------------------------------------
+    # 2. EVALUATE AMBIGUITY & ID TIE-BREAKER
+    # ------------------------------------------------------------------
+    if len(scores) > 1 and score_gap < effective_margin:
+        if id_positions:
+            best_row = new_df.loc[best_idx]
+            second_row = new_df.loc[scores[1][0]]
 
-    if (
-        len(scores) > 1
-        and (best_score - second_best_score) < effective_margin
-        and (best_raw - second_best_raw) < effective_margin
-    ):
+            best_id_match = all(
+                matching_value(legacy_row.iloc[p], config.null_token)
+                == matching_value(best_row.iloc[p], config.null_token)
+                for p in id_positions
+            )
+            second_id_match = all(
+                matching_value(legacy_row.iloc[p], config.null_token)
+                == matching_value(second_row.iloc[p], config.null_token)
+                for p in id_positions
+            )
+
+            # Accept best candidate if it matches key IDs while runner-up fails
+            if best_id_match and not second_id_match:
+                return (best_idx, best_score, second_best_score, "MATCHED")
+
         return (None, best_score, second_best_score, "AMBIGUOUS")
 
+    # ------------------------------------------------------------------
+    # 3. ID MISMATCH SAFETY CHECK
+    # ------------------------------------------------------------------
     if id_positions:
         new_row = new_df.loc[best_idx]
         id_mismatch = any(
@@ -750,15 +715,11 @@ def find_best_candidate(
         if id_mismatch:
             return (None, best_score, second_best_score, "UNRESOLVED")
 
-    return (
-        best_idx,
-        best_score,
-        second_best_score,
-        "MATCHED",
-    )
+    return (best_idx, best_score, second_best_score, "MATCHED")
+
 
 # ============================================================
-# RAW COLUMN COMPARISON
+# RAW COLUMN COMPARISON & CLASSIFICATION
 # ============================================================
 
 def compare_rows_raw(
@@ -786,9 +747,6 @@ def compare_rows_raw(
 
     return differences
 
-# ============================================================
-# DIFFERENCE CLASSIFICATION HELPER
-# ============================================================
 
 _PRECISION_DIGITS = 2
 
@@ -869,9 +827,6 @@ def classify_difference(legacy_value: str, new_value: str) -> str:
 
     return _classify_core(legacy_value, new_value)
 
-# ============================================================
-# DIFFERENCE SIGNATURE
-# ============================================================
 
 def difference_signature(differences):
     return tuple(
@@ -904,28 +859,18 @@ def reconcile(
     normalized_legacy = build_matching_dataframe(legacy_df, config.null_token)
     normalized_new = build_matching_dataframe(new_df, config.null_token)
 
-    (
-        matched_pairs,
-        unmatched_legacy,
-        unmatched_new,
-    ) = find_exact_raw_matches(
-        legacy_df,
-        new_df,
-        config,
+    matched_pairs, unmatched_legacy, unmatched_new = find_exact_raw_matches(
+        legacy_df, new_df, config
     )
 
     used_new_indexes = {pair["new_index"] for pair in matched_pairs}
 
     blocking_columns = select_blocking_columns(
-        normalized_new,
-        config,
-        normalized_legacy,
+        normalized_new, config, normalized_legacy
     )
 
     block_indexes = build_block_indexes(
-        normalized_new,
-        blocking_columns,
-        config.max_block_columns,
+        normalized_new, blocking_columns, config.max_block_columns
     )
 
     detailed_results = []
@@ -958,12 +903,7 @@ def reconcile(
             config,
         )
 
-        (
-            best_idx,
-            best_score,
-            second_best_score,
-            status,
-        ) = find_best_candidate(
+        best_idx, best_score, second_best_score, status = find_best_candidate(
             legacy_row,
             new_df,
             candidate_indexes,
@@ -1054,10 +994,7 @@ def reconcile(
             }
         )
 
-    new_only_records = [
-        idx for idx in new_df.index if idx not in used_new_indexes
-    ]
-
+    new_only_records = [idx for idx in new_df.index if idx not in used_new_indexes]
     actual_mismatch_count = len(detailed_results)
 
     summary = {
@@ -1093,15 +1030,11 @@ def reconcile(
 
 
 # ============================================================
-# REPORT PRINTING
+# CONSOLE SUMMARY PRINTING
 # ============================================================
 
 def print_report(results, structure_result):
-    print("\n")
-    print("=" * 80)
-    print("CSV RECONCILIATION REPORT")
-    print("=" * 80)
-
+    print("\n" + "=" * 80 + "\nCSV RECONCILIATION SUMMARY\n" + "=" * 80)
     summary = results["summary"]
 
     print(f"Legacy records               : {summary['legacy_records']:,}")
@@ -1112,50 +1045,27 @@ def print_report(results, structure_result):
     print(f"Unresolved legacy records    : {summary['unresolved_legacy_records']:,}")
     print(f"New-only records             : {summary['new_only_records']:,}")
 
-    print("\n" + "-" * 80 + "\nENCODING\n" + "-" * 80)
+    print("\n" + "-" * 80 + "\nENCODING STATUS\n" + "-" * 80)
     print(f"Legacy file encoding         : {summary['legacy_encoding']}")
     print(f"New file encoding            : {summary['new_encoding']}")
 
     if summary["encoding_mismatch"]:
-        print(
-            "\n  *** ENCODING MISMATCH DETECTED ***\n"
-            "  The two files were read with different encodings.\n"
-            "  Comparison remains valid — both files are decoded to Unicode."
-        )
+        print("\n  *** ENCODING MISMATCH DETECTED *** (Decoded cleanly to Unicode)")
     else:
         print("Encodings match.")
 
-    print("\n" + "-" * 80 + "\nCOLUMN STRUCTURE\n" + "-" * 80)
+    print("\n" + "-" * 80 + "\nCOLUMN STRUCTURE STATUS\n" + "-" * 80)
     print(f"Legacy columns : {structure_result['legacy_column_count']}")
     print(f"New columns    : {structure_result['new_column_count']}")
 
     if structure_result["column_differences"]:
-        print("\nCOLUMN NAME DIFFERENCES:")
-        for difference in structure_result["column_differences"]:
-            print(
-                f"Position {difference['position']}: "
-                f"{difference['legacy_column']} <-> {difference['new_column']}"
-            )
+        print(f"Column name differences detected at {len(structure_result['column_differences'])} position(s).")
     else:
         print("Column names match at all positions.")
 
-    print("\n" + "-" * 80 + "\nCOLUMN MISMATCH COUNTS\n" + "-" * 80)
-    counts = results["column_mismatch_counts"]
-    for position, count in counts.most_common():
-        print(f"Position {position:<5} {count:>12,}")
-
-    print("\n" + "-" * 80 + "\nDIFFERENCE SIGNATURES\n" + "-" * 80)
-    signatures = results["difference_signature_counts"]
-    for signature, count in signatures.most_common():
-        signature_text = " + ".join(
-            f"{position}:{legacy_name}"
-            for (position, legacy_name, new_name) in signature
-        )
-        print(f"{signature_text:<65}{count:>10,}")
-
 
 # ============================================================
-# NUMERIC COLUMN IDENTIFICATION
+# NUMERIC & GROUPING IDENTIFICATION
 # ============================================================
 
 def _try_decimal(value: str) -> bool:
@@ -1204,12 +1114,8 @@ def identify_numeric_columns(df: pd.DataFrame, null_token: str) -> list:
     return numeric_cols
 
 
-# ============================================================
-# GROUPING COLUMN IDENTIFICATION
-# ============================================================
-
 _ID_PATTERNS = _re.compile(
-    r"(^|_)(id|key|code|num|no|number|ref|uuid|guid|seq)($|_)",
+    r"(^|_)(id|key|code|num|no|number|ref|uuid|guid|seq|acc|secu|dt|date)($|_)",
     _re.IGNORECASE,
 )
 _DATE_PATTERNS = _re.compile(
@@ -1237,9 +1143,7 @@ def _looks_like_id_col(col: str, sample_values: list) -> bool:
 def _looks_like_date_col(col: str, sample_values: list) -> bool:
     if _DATE_PATTERNS.search(col):
         return True
-    date_hits = sum(
-        1 for v in sample_values[:20] if _DATE_VALUE_RE.match(str(v))
-    )
+    date_hits = sum(1 for v in sample_values[:20] if _DATE_VALUE_RE.match(str(v)))
     return date_hits > len(sample_values[:20]) * 0.5
 
 
@@ -1263,10 +1167,7 @@ def identify_grouping_columns(
         if distinct > config.max_grouping_cardinality:
             continue
 
-        if _looks_like_id_col(col, non_empty):
-            continue
-
-        if _looks_like_date_col(col, non_empty):
+        if _looks_like_id_col(col, non_empty) or _looks_like_date_col(col, non_empty):
             continue
 
         grouping.append(col)
@@ -1381,12 +1282,7 @@ def compute_rollups(
 
         return grouped_totals
 
-    parse_rates = getattr(
-        identify_numeric_columns,
-        "_parse_rates",
-        {},
-    )
-
+    parse_rates = getattr(identify_numeric_columns, "_parse_rates", {})
     file_totals = _summarise_numeric_frame(legacy_df, new_df)
     grouped_totals = _summarise_grouped_frame(legacy_df, new_df)
 
@@ -1398,10 +1294,6 @@ def compute_rollups(
         "grouped_totals": grouped_totals,
     }
 
-
-# ============================================================
-# UNIFIED REPORT NAME GENERATOR
-# ============================================================
 
 def build_report_name(legacy_file: str, new_file: str) -> str:
     l = os.path.splitext(os.path.basename(legacy_file))[0]
@@ -1448,7 +1340,6 @@ def export_unified_csv(
     column_error_type_counts = results["column_error_type_counts"]
 
     rows = []
-
     rows.append(["=" * 60])
     rows.append(["RECONCILIATION RESULTS"])
     rows.append(["=" * 60])
@@ -1495,7 +1386,6 @@ def export_unified_csv(
             f"{len(col_diffs)} column name difference(s) found. "
             f"Legacy: [{legacy_name_list}] | New: [{new_name_list}]"
         )
-
         rows.append(["position", "legacy_column_name", "new_column_name"])
         for d in col_diffs:
             rows.append([d["position"], d["legacy_column"] or "", d["new_column"] or ""])
@@ -1547,7 +1437,7 @@ def export_unified_csv(
         for i in new_only:
             rows.append(["[NEW]", i + 2] + new_df.loc[i].tolist())
 
-    # 4b. DUPLICATE ROWS IN INPUT FILES (FOR AUDIT ONLY - ALL ROWS RECONCILED)
+    # 4b. DUPLICATE ROWS
     section("DUPLICATE ROWS IN INPUT FILES")
     leg_dups = legacy_duplicates or []
     new_dups = new_duplicates or []
@@ -1562,7 +1452,7 @@ def export_unified_csv(
         )
 
         blank()
-        rows.append(["--- LEGACY DUPLICATES (repeats seen in legacy file) ---"])
+        rows.append(["--- LEGACY DUPLICATES ---"])
         if leg_dups:
             rows.append(["source", "file_row", "first_seen_file_row"] + legacy_cols)
             for d in leg_dups:
@@ -1571,7 +1461,7 @@ def export_unified_csv(
             rows.append(["(none)"])
 
         blank()
-        rows.append(["--- NEW DUPLICATES (repeats seen in new file) ---"])
+        rows.append(["--- NEW DUPLICATES ---"])
         if new_dups:
             rows.append(["source", "file_row", "first_seen_file_row"] + new_cols)
             for d in new_dups:
@@ -1680,11 +1570,8 @@ def export_unified_csv(
                 rows.append(legacy_cols)
 
                 legacy_full = sample["legacy_full_row"]
-                legacy_row_out = list(legacy_full)
-                new_row_out = list(sample["new_full_row"])
-
-                rows.append(["[LEGACY]"] + legacy_row_out)
-                rows.append(["[NEW]"] + new_row_out)
+                rows.append(["[LEGACY]"] + list(legacy_full))
+                rows.append(["[NEW]"] + list(sample["new_full_row"]))
 
     # 8. NUMERIC ROLLUP VALIDATION
     rollup = rollup or results.get("rollup")
@@ -1698,11 +1585,7 @@ def export_unified_csv(
         ft = rollup["file_totals"]
         parse_rates = rollup.get("parse_rates", {})
 
-        col_summaries = []
-        for col in num_cols:
-            rate = parse_rates.get(col, 1.0)
-            col_summaries.append(f"{col} ({rate:.0%} numeric)")
-
+        col_summaries = [f"{col} ({parse_rates.get(col, 1.0):.0%} numeric)" for col in num_cols]
         summary_line(f"Numeric columns identified ({len(num_cols)}): " + ", ".join(col_summaries))
 
         if grp_cols:
@@ -1760,7 +1643,7 @@ def parse_args():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Reconcile a legacy CSV against a new CSV with dynamic ambiguity margin."
+        description="Reconcile a legacy CSV against a new CSV with adaptive ambiguity decision engine."
     )
 
     parser.add_argument("legacy_file", help="Path to the legacy CSV file")
@@ -1772,8 +1655,6 @@ def parse_args():
     parser.add_argument("--output", default="reconciliation_output", dest="output_directory")
     parser.add_argument("--min-similarity", type=float, default=0.75, dest="min_similarity")
     parser.add_argument("--ambiguity-margin", type=float, default=0.05, dest="ambiguity_margin")
-
-    # Dynamic ambiguity column difference CLI flag
     parser.add_argument(
         "--ambiguity-max-col-diff",
         type=float,
@@ -1781,7 +1662,6 @@ def parse_args():
         dest="ambiguity_max_column_diff",
         help="Max column difference threshold to consider candidates ambiguous (default: 1.0 column difference)",
     )
-
     parser.add_argument("--max-block-columns", type=int, default=3, dest="max_block_columns")
     parser.add_argument("--max-candidates", type=int, default=100, dest="max_candidates_per_row")
     parser.add_argument("--sample-limit", type=int, default=5, dest="sample_limit")
@@ -1830,13 +1710,8 @@ if __name__ == "__main__":
     legacy_duplicates = audit_duplicate_rows(legacy_df, config.null_token, "legacy")
     new_duplicates = audit_duplicate_rows(new_df, config.null_token, "new")
 
-    if legacy_duplicates:
-        print(f"  legacy: {len(legacy_duplicates)} duplicate row(s) identified (retained for comparison).")
-    if new_duplicates:
-        print(f"  new   : {len(new_duplicates)} duplicate row(s) identified (retained for comparison).")
-
-    print(f"Legacy DF shape : {legacy_df.shape}")
-    print(f"New DF shape    : {new_df.shape}")
+    print(f"  legacy shape: {legacy_df.shape} ({len(legacy_duplicates)} duplicates logged)")
+    print(f"  new    shape: {new_df.shape} ({len(new_duplicates)} duplicates logged)")
 
     structure_result = validate_structure(legacy_df, new_df)
 
@@ -1895,4 +1770,4 @@ if __name__ == "__main__":
         new_duplicates=new_duplicates,
     )
 
-    print("\nReconciliation completed.")
+    print("\nReconciliation completed successfully.")
