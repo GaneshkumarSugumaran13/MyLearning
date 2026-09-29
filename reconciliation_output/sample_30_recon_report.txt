@@ -28,10 +28,10 @@ position | legacy_column_name | new_column_name
 ### COUNT MISMATCH ###
 
 
->> Row count difference of 2: legacy=30, new=28. 2 record(s) present in legacy but missing in new.
+>> Row count difference of 2: legacy=31, new=29. 2 record(s) present in legacy but missing in new.
 metric | legacy | new
-total_records | 30 | 28
-exact_matches | 0 | 0
+total_records | 31 | 29
+exact_matches | 1 | 1
 mismatched_records | 28 | 
 unresolved_legacy | 2 | 
 new_only_records |  | 0
@@ -45,8 +45,8 @@ new_only_records |  | 0
 
 --- LEGACY (unresolved, as in file) ---
 source | file_row | status | best_similarity | test_val | date | record_id | customer | region | category | amount | quantity | status | notes
-[LEGACY] | 2 | UNRESOLVED | 0.50 | 20.00 | 2026-09-25 12:55:58.0600000000 | R001 | Customer 01 | North | Retail | 1037.00 | 3 | ACTIVE | Order batch 01
-[LEGACY] | 25 | AMBIGUOUS | 0.30 | 20.00 | 2026-09-25 12:55:58.0600000000 | R024 | Customer 24 | West | Online | 1888.366 | 2 | PENDING | Order batch 24
+[LEGACY] | 3 | UNRESOLVED | 0.50 | 20.00 | 2026-09-25 12:55:58.0600000000 | R001 | Customer 01 | North | Retail | 1037.00 | 3 | ACTIVE | Order batch 01
+[LEGACY] | 26 | AMBIGUOUS | 0.30 | 20.00 | 2026-09-25 12:55:58.0600000000 | R024 | Customer 24 | West | Online | 1888.366 | 2 | PENDING | Order batch 24
 
 
 --- NEW (unpaired, as in file) ---
@@ -67,8 +67,8 @@ new | 4 | 20.00,2026-09-25 12:55:58.060,R024Customer XX,West,Online,1888.37,2,PE
 
 >> File-level line endings match (LF).
 source | file_eol | CRLF_count | LF_count | CR_count
-legacy | LF | 0 | 31 | 0
-new | LF | 0 | 31 | 0
+legacy | LF | 0 | 32 | 0
+new | LF | 0 | 32 | 0
 >> No embedded newlines found inside any field values.
 
 
@@ -182,8 +182,8 @@ test_val | date | record_id | customer | region | category | amount | quantity |
 
 >> NOTE: 2 row(s) skipped during load due to delimiter count mismatch (see SKIPPED LINES section) are excluded from this rollup — totals reflect only rows that were successfully parsed.
 metric | test_val [LEGACY] | test_val [NEW] | amount [LEGACY] | amount [NEW]
-SUM | 600.00 ! | 560.00 ! | 43652.9418000 ! | 41198.5820 !
-COUNT (parsed) | 30 | 28 | 30 | 27
+SUM | 620.00 ! | 580.00 ! | 45652.9418000 ! | 43198.5820 !
+COUNT (parsed) | 31 | 29 | 31 | 28
 COUNT (skipped — non-numeric values) | 0 | 0 | 0 | 1
 >> ROLLUP MISMATCH on 2 column(s): test_val, amount. Cells marked with ' !' indicate a difference.
 
@@ -194,7 +194,7 @@ COUNT (skipped — non-numeric values) | 0 | 0 | 0 | 1
 Grouped by: region
 
 region | test_val SUM [LEGACY] | test_val SUM [NEW] | amount SUM [LEGACY] | amount SUM [NEW]
-East | 140.00 | 140.00 | 10885.9658 ! | 11174.97 !
+East | 160.00 | 160.00 | 12885.9658 ! | 13174.97 !
 North | 160.00 ! | 140.00 ! | 12440.00 ! | 11403.0000 !
 South | 160.00 | 160.00 | 10626.0000000 ! | 10512.00 !
 West | 140.00 ! | 120.00 ! | 9700.976 ! | 8108.612 !
@@ -215,7 +215,7 @@ Online | 120.00 ! | 100.00 ! | 9664.3318 ! | 6627.97 !
 Partner | 120.00 ! | 100.00 ! | 7775.00 ! | 6220.00 !
 Retail | 120.00 | 120.00 | 8997.4800000 ! | 9515.484 !
 Services | 120.00 | 120.00 | 9441.13 ! | 9530.128 !
-Wholesale | 120.00 | 120.00 | 7775.00 ! | 9305.0000 !
+Wholesale | 140.00 | 140.00 | 9775.00 ! | 11305.0000 !
 
 >> ROLLUP MISMATCH grouped by category on 7 group/column combination(s). Cells marked with ' !' indicate a difference.
 >> category=Online: test_val sum diff -20.00
@@ -230,7 +230,7 @@ Wholesale | 120.00 | 120.00 | 7775.00 ! | 9305.0000 !
 Grouped by: status
 
 status | test_val SUM [LEGACY] | test_val SUM [NEW] | amount SUM [LEGACY] | amount SUM [NEW]
-ACTIVE | 200.00 ! | 180.00 ! | 15366.5758 ! | 13267.582 !
+ACTIVE | 220.00 ! | 200.00 ! | 17366.5758 ! | 15267.582 !
 INACTIVE | 200.00 ! | 220.00 ! | 15735.00 ! | 17179.0000 !
 PENDING | 200.00 ! | 160.00 ! | 12551.3660000 ! | 10752.00 !
 
@@ -248,8 +248,8 @@ PENDING | 200.00 ! | 160.00 ! | 12551.3660000 ! | 10752.00 !
 
 >> NOTE: 2 row(s) skipped during load due to delimiter count mismatch (see SKIPPED LINES section) are excluded from this rollup — totals reflect only rows that were successfully parsed.
 metric | test_val [LEGACY] | test_val [NEW] | amount [LEGACY] | amount [NEW]
-SUM | 0 | 0 | 0 | 0
-COUNT (parsed) | 0 | 0 | 0 | 0
+SUM | 20.00 | 20.00 | 2000.00 | 2000.00
+COUNT (parsed) | 1 | 1 | 1 | 1
 >> All numeric column totals match between legacy and new files.
 
 
@@ -259,6 +259,7 @@ COUNT (parsed) | 0 | 0 | 0 | 0
 Grouped by: region
 
 region | test_val SUM [LEGACY] | test_val SUM [NEW] | amount SUM [LEGACY] | amount SUM [NEW]
+East | 20.00 | 20.00 | 2000.00 | 2000.00
 
 >> All region group totals match between legacy and new files.
 
@@ -266,6 +267,7 @@ region | test_val SUM [LEGACY] | test_val SUM [NEW] | amount SUM [LEGACY] | amou
 Grouped by: category
 
 category | test_val SUM [LEGACY] | test_val SUM [NEW] | amount SUM [LEGACY] | amount SUM [NEW]
+Wholesale | 20.00 | 20.00 | 2000.00 | 2000.00
 
 >> All category group totals match between legacy and new files.
 
@@ -273,5 +275,6 @@ category | test_val SUM [LEGACY] | test_val SUM [NEW] | amount SUM [LEGACY] | am
 Grouped by: status
 
 status | test_val SUM [LEGACY] | test_val SUM [NEW] | amount SUM [LEGACY] | amount SUM [NEW]
+ACTIVE | 20.00 | 20.00 | 2000.00 | 2000.00
 
 >> All status group totals match between legacy and new files.

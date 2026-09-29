@@ -2943,14 +2943,14 @@ def export_unified_csv(
                         rows.append(data_row)
 
                     mismatch_lines = []
-                    for g_val in sorted(grp_data.keys()):
-                        for c in num_cols:
+                    for c in num_cols:
+                        for g_val in sorted(grp_data.keys()):
                             cs = grp_data[g_val].get(c, {})
                             if cs.get("sum_match", True):
                                 continue
                             delta = cs["new_sum"] - cs["legacy_sum"]
                             mismatch_lines.append(
-                                f"{g_col}={g_val}: {c} sum diff {delta:+}"
+                                f"{c}: {g_col}={g_val} sum diff {delta:+}"
                             )
 
                     rows.append([])      # single blank line

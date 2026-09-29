@@ -29,3 +29,4 @@ test_value,date,record_id,customer,region,category,amount,quantity,status,remark
 20.00,2026-09-25 12:55:58.060,R015,Customer 15,East,Retail,1555.00,9,PENDING,Order batch 15,
 20.00,2026-09-25 12:55:58.060,R020,Customer 20,West,Partner,1740.00,6,INACTIVE,Order batch 20,
 20.00,2026-09-25 12:55:58.060,R007,Customer 07,East,Wholesale,1459.00,9,ACTIVE,Order batch 07,
+20.00,2026-09-25 12:55:58.060,R007,Customer 99,East,Wholesale,2000.00,9,ACTIVE,Order batch 99,
