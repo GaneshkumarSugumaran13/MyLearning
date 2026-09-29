@@ -6,10 +6,29 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from itertools import combinations
 from typing import Any
+import difflib
+import codecs
 
 import chardet
 import pandas as pd
 import re as _re
+
+# ============================================================
+# PATH SAFETY
+# ============================================================
+
+def safe_path(path: str, must_exist: bool = True) -> str:
+    """Resolve to an absolute canonical path and reject anything unsafe."""
+    real = os.path.realpath(os.path.abspath(path))
+    root = os.path.realpath(os.getcwd())
+
+    if os.path.commonpath([real, root]) != root:
+        raise ValueError(f"Path outside working directory: {path}")
+
+    if must_exist and not os.path.isfile(real):
+        raise FileNotFoundError(f"Not a file: {path}")
+
+    return real
 
 # ============================================================
 # CONFIGURATION
@@ -21,14 +40,21 @@ class ReconciliationConfig:
     legacy_file: str
     new_file: str
 
-    delimiter: str = ","
+    delimiter: str = ""      # was ","
+    precision_digits: int = 2
 
     # Per-file encodings.  legacy_encoding / new_encoding
     # take precedence; encoding is the shared fallback used
     # when neither per-file value is supplied.
     encoding: str = "utf-8"
+
     legacy_encoding: str = ""
     new_encoding: str = ""
+    legacy_encoding_label: str = ""
+    new_encoding_label: str = ""
+
+    legacy_delimiter: str = ""
+    new_delimiter: str = ""
 
     # Quote handling.
     # quotechar  : character used to wrap field values.
@@ -36,6 +62,9 @@ class ReconciliationConfig:
     #              interpreted as a literal ".
     quotechar: str = '"'
     doublequote: bool = True
+
+    legacy_bad_lines: list = None
+    new_bad_lines: list = None
 
     # --------------------------------------------------------
     # Candidate matching
@@ -95,7 +124,7 @@ class ReconciliationConfig:
 # 64 KB is enough for chardet to be confident on virtually
 # all real-world CSV files, including UTF-16 (which has a
 # BOM in the first two bytes that makes detection instant).
-_DETECT_SAMPLE_BYTES = 65_536
+_DETECT_SAMPLE_BYTES = 10_000_000
 
 
 def detect_encoding(
@@ -112,8 +141,13 @@ def detect_encoding(
     cannot make a determination.
     """
 
-    with open(filepath, "rb") as f:
+    with open(safe_path(filepath), "rb") as f:
         raw = f.read(_DETECT_SAMPLE_BYTES)
+
+    if raw.startswith(codecs.BOM_UTF8):
+        return "utf-8-sig", 1.0
+    if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return "utf-16", 1.0
 
     result = chardet.detect(raw)
 
@@ -129,23 +163,14 @@ def detect_encoding(
 
     return encoding, confidence
 
-
 def resolve_encoding(
     explicit: str,
     filepath: str,
     label: str,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
 
     """
-    Return (encoding_to_use, detection_source).
-
-    detection_source is one of:
-        "explicit"   – caller supplied a value
-        "detected"   – chardet inferred it
-        "default"    – chardet returned nothing; utf-8 assumed
-
-    Prints a one-line status so the operator can see what
-    was used for each file.
+    Return (codec_to_read_with, detection_source, raw_label).
     """
 
     if explicit:
@@ -155,37 +180,38 @@ def resolve_encoding(
             f"(explicit)"
         )
 
-        return explicit, "explicit"
+        return explicit, "explicit", explicit
 
     detected, confidence = detect_encoding(
         filepath
     )
 
+    is_ascii = detected.lower() == "ascii"
+    codec = "utf-8" if is_ascii else detected
+
     if confidence > 0.0:
 
         print(
-            f"  {label}: {detected} "
-            f"(auto-detected, "
-            f"confidence={confidence:.0%})"
+            f"  {label}: {codec} "
+            f"(auto-detected"
+            + (", chardet saw ascii-only content" if is_ascii else "")
+            + f", confidence={confidence:.0%})"
         )
 
-        return detected, "detected"
+        return codec, "detected", detected
 
     print(
         f"  {label}: utf-8 "
         f"(chardet inconclusive, defaulting)"
     )
 
-    return "utf-8", "default"
-
-
-
+    return "utf-8", "default", "utf-8"
 
 # ============================================================
 # EOL / NEWLINE DETECTION
 # ============================================================
 
-def detect_eol(filepath: str, encoding: str) -> dict:
+def detect_eol(filepath: str, encoding: str, delimiter=",") -> dict:
     """
     Detect both file-level line endings and any embedded
     newlines inside field values.
@@ -206,7 +232,7 @@ def detect_eol(filepath: str, encoding: str) -> dict:
 
     # ---- file-level line endings (raw bytes) ----------------
 
-    with open(filepath, "rb") as f:
+    with open(safe_path(filepath), "rb") as f:
         raw = f.read()
 
     crlf_count = raw.count(b"\r\n")
@@ -241,6 +267,7 @@ def detect_eol(filepath: str, encoding: str) -> dict:
         df = pd.read_csv(
             filepath,
             encoding=encoding,
+            delimiter=delimiter,
             dtype=str,
             keep_default_na=False,
         )
@@ -267,6 +294,59 @@ def detect_eol(filepath: str, encoding: str) -> dict:
         "eol_counts":            eol_counts,
         "embedded_newline_rows": embedded,
     }
+
+# ============================================================
+# DELIMITER DETECTION
+# ============================================================
+
+def detect_delimiter(filepath: str, encoding: str) -> str:
+    import csv
+    with open(safe_path(filepath), "r", encoding=encoding, newline="") as f:
+        sample = f.read(65_536)
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=",|;\t").delimiter
+    except csv.Error:
+        # Fallback: pick the most frequent candidate in the header line
+        header = sample.splitlines()[0] if sample else ""
+        counts = {d: header.count(d) for d in ",|;\t"}
+        best = max(counts, key=counts.get)
+        return best if counts[best] > 0 else ","
+
+# ============================================================
+# BAD LINE DETECTION
+# ============================================================
+
+def _prescan_short_lines(filepath: str, encoding: str, delimiter: str, quotechar: str) -> list:
+    """
+    Detect rows with FEWER raw delimiter-separated tokens than the
+    header. Rows with MORE tokens are caught later by on_bad_lines.
+    Heuristic: a quoted field containing the delimiter is not
+    distinguished from a real column break, so this can rarely
+    over-flag a well-formed quoted row -- treat results as candidates.
+    """
+    import csv as _csv
+    with open(safe_path(filepath), "r", encoding=encoding, newline="") as f:
+        reader = _csv.reader(f, delimiter=delimiter, quotechar=quotechar)
+        rows = list(reader)
+
+    if not rows:
+        return []
+
+    expected = len(rows[0])
+    short = []
+    for i, row in enumerate(rows[1:], start=2):   # 1-based + header
+        if len(row) < expected:
+            short.append({"row": i, "field_count": len(row), "raw_line": delimiter.join(row)})
+    return short
+
+
+class _BadLineCollector:
+    def __init__(self):
+        self.skipped = []
+
+    def __call__(self, bad_line):
+        self.skipped.append(bad_line)
+        return None   # drop the row
 
 # ============================================================
 # CSV LOADING
@@ -298,13 +378,13 @@ def load_csv(config: ReconciliationConfig):
     # placeholder the user left unset.
     print("\nResolving file encodings:")
 
-    legacy_enc, _ = resolve_encoding(
+    legacy_enc, _, legacy_label = resolve_encoding(
         config.legacy_encoding,
         config.legacy_file,
         "legacy",
     )
 
-    new_enc, _ = resolve_encoding(
+    new_enc, _, new_label = resolve_encoding(
         config.new_encoding,
         config.new_file,
         "new   ",
@@ -315,9 +395,27 @@ def load_csv(config: ReconciliationConfig):
     config.legacy_encoding = legacy_enc
     config.new_encoding = new_enc
 
+    config.legacy_encoding_label = legacy_label
+    config.new_encoding_label = new_label
+
+    if config.delimiter:
+        legacy_delim = new_delim = config.delimiter
+        print(f"  delimiter: {config.delimiter!r} (explicit)")
+    else:
+        legacy_delim = detect_delimiter(config.legacy_file, legacy_enc)
+        new_delim = detect_delimiter(config.new_file, new_enc)
+        print(f"  delimiter: legacy={legacy_delim!r}, new={new_delim!r} (auto-detected)")
+
+    config.legacy_delimiter = legacy_delim
+    config.new_delimiter = new_delim
+
+    legacy_short = _prescan_short_lines(config.legacy_file, legacy_enc, legacy_delim, config.quotechar)
+    new_short = _prescan_short_lines(config.new_file, new_enc, new_delim, config.quotechar)
+
+    legacy_bad = _BadLineCollector()
     legacy_df = pd.read_csv(
         config.legacy_file,
-        delimiter=config.delimiter,
+        delimiter=legacy_delim,
         encoding=legacy_enc,
         dtype=str,
         keep_default_na=False,
@@ -327,18 +425,40 @@ def load_csv(config: ReconciliationConfig):
         quotechar=config.quotechar,
         doublequote=config.doublequote,
         quoting=0,              # csv.QUOTE_MINIMAL
+        engine="python",
+        on_bad_lines=legacy_bad,
     )
 
+    new_bad = _BadLineCollector()
     new_df = pd.read_csv(
         config.new_file,
-        delimiter=config.delimiter,
+        delimiter=new_delim,
         encoding=new_enc,
         dtype=str,
         keep_default_na=False,
         quotechar=config.quotechar,
         doublequote=config.doublequote,
         quoting=0,              # csv.QUOTE_MINIMAL
+        engine="python",
+        on_bad_lines=new_bad,
     )
+
+    # Short rows aren't dropped by pandas (it pads them), so drop
+    # them here to keep both DataFrames free of partial rows.
+    legacy_short_rows = {b["row"] - 2 for b in legacy_short}   # 1-based file line -> 0-based df index
+    new_short_rows = {b["row"] - 2 for b in new_short}
+    if legacy_short_rows:
+        legacy_df = legacy_df.drop(index=[i for i in legacy_short_rows if i in legacy_df.index])
+    if new_short_rows:
+        new_df = new_df.drop(index=[i for i in new_short_rows if i in new_df.index])
+
+    config.legacy_bad_lines = legacy_bad.skipped + legacy_short
+    config.new_bad_lines = new_bad.skipped + new_short
+
+    if config.legacy_bad_lines:
+        print(f"  legacy: {len(config.legacy_bad_lines)} row(s) skipped (delimiter count mismatch)")
+    if config.new_bad_lines:
+        print(f"  new   : {len(config.new_bad_lines)} row(s) skipped (delimiter count mismatch)")
 
     return legacy_df, new_df
 
@@ -964,6 +1084,7 @@ def find_best_candidate(
     new_df: pd.DataFrame,
     candidate_indexes,
     config: ReconciliationConfig,
+    id_positions=None,
 ):
     """
     Evaluate only blocked candidates.
@@ -1023,14 +1144,22 @@ def find_best_candidate(
     ):
         return (None, best_score, second_best_score, "AMBIGUOUS")
 
+    if id_positions:
+        new_row = new_df.loc[best_idx]
+        id_mismatch = any(
+            matching_value(legacy_row.iloc[p], config.null_token)
+            != matching_value(new_row.iloc[p], config.null_token)
+            for p in id_positions
+        )
+        if id_mismatch:
+            return (None, best_score, second_best_score, "UNRESOLVED")
+
     return (
         best_idx,
         best_score,
         second_best_score,
         "MATCHED",
     )
-
-
 
 # ============================================================
 # RAW COLUMN COMPARISON
@@ -1100,10 +1229,13 @@ def compare_rows_raw(
 # DIFFERENCE CLASSIFICATION Helper
 # ============================================================
 
-def classify_difference(legacy_value: str, new_value: str) -> str:
+_PRECISION_DIGITS = 2
+
+def _classify_core(legacy_value: str, new_value: str) -> str:
     """
-    Classify a raw difference for pattern-level grouping.
-    Verdict is never affected; every difference stays a mismatch.
+    Classify a raw difference (whitespace already handled by the
+    caller). Verdict is never affected; every difference stays a
+    mismatch.
 
     Only '.' is treated as a decimal point. ',' is never a decimal
     point, so thousands-separator differences (1,000.50 vs 1000.50)
@@ -1123,6 +1255,29 @@ def classify_difference(legacy_value: str, new_value: str) -> str:
     ):
         return "THOUSANDS_SEPARATOR"
 
+    # Leading zero before the decimal point: 0.003 vs .003
+    _num_re = _re.compile(r"^[+-]?(\d+\.\d*|\.\d+)$")
+
+    def _strip_lead_zero(s):
+        return _re.sub(r"^([+-]?)0+(?=\.)", r"\1", s)
+
+    def _strip_trail_zero(s):
+        s = _re.sub(r"0+$", "", s) if "." in s else s
+        return s[:-1] if s.endswith(".") else s
+
+    def _has_lead_zero(s):
+        return bool(_re.match(r"^[+-]?0+\.", s))
+
+    if (
+        _num_re.match(legacy_value)
+        and _num_re.match(new_value)
+        and _has_lead_zero(legacy_value) != _has_lead_zero(new_value)   # replaces the wrong guard
+        and _strip_trail_zero(_strip_lead_zero(legacy_value))
+            == _strip_trail_zero(_strip_lead_zero(new_value))
+    ):
+        return "STARTING_ZERO"
+
+    # Decimal-fraction classes
     l = split_frac(legacy_value)
     n = split_frac(new_value)
 
@@ -1141,11 +1296,37 @@ def classify_difference(legacy_value: str, new_value: str) -> str:
     if l_stripped == n_stripped:
         return "TRAILING_ZEROS_ONLY"
 
-    shorter, longer = sorted((l_stripped, n_stripped), key=len)
-    if longer.startswith(shorter):
-        return "EXTRA_DIGITS"
+    from decimal import Decimal, ROUND_DOWN
+    q = Decimal(1).scaleb(-_PRECISION_DIGITS)   # 0.01 for 2 digits
+    try:
+        l_dec = Decimal(legacy_value.strip())
+        n_dec = Decimal(new_value.strip())
+        # Agree on the first N decimals (truncated, not rounded)...
+        if l_dec.quantize(q, ROUND_DOWN) == n_dec.quantize(q, ROUND_DOWN):
+            # ...but at least one side carries non-zero digits beyond N
+            if l_dec != l_dec.quantize(q, ROUND_DOWN) or n_dec != n_dec.quantize(q, ROUND_DOWN):
+                return "PRECISION_MISMATCH"
+    except Exception:
+        pass
 
     return "EXACT_VALUES"
+
+
+def classify_difference(legacy_value: str, new_value: str) -> str:
+    """
+    Public classifier. Whitespace is separated out first; if it
+    differs together with another difference, the class is
+    prefixed with WHITESPACE_AND_.
+    """
+    l_core, n_core = legacy_value.strip(), new_value.strip()
+
+    if l_core == n_core:
+        return "WHITESPACE_ONLY"
+
+    if legacy_value != l_core or new_value != n_core:
+        return "WHITESPACE_AND_" + _classify_core(l_core, n_core)
+
+    return _classify_core(legacy_value, new_value)
 
 # ============================================================
 # DIFFERENCE SIGNATURE
@@ -1199,6 +1380,11 @@ def reconcile(
         new_df.columns
     )
 
+    id_positions = [
+        i for i, col in enumerate(legacy_columns)
+        if _ID_PATTERNS.search(col)
+    ]
+
     # --------------------------------------------------------
     # Matching representation
     # --------------------------------------------------------
@@ -1246,17 +1432,6 @@ def reconcile(
         normalized_legacy,
     )
 
-    print("\nSelected blocking columns:")
-
-    for item in blocking_columns:
-
-        print(
-            f"  Position {item['position'] + 1}: "
-            f"{item['column']} "
-            f"(uniqueness="
-            f"{item['uniqueness_ratio']:.2%})"
-        )
-
     # --------------------------------------------------------
     # Build block indexes
     # --------------------------------------------------------
@@ -1275,13 +1450,18 @@ def reconcile(
 
     unresolved_records = []
 
+    def _bad_line_text(b):
+        if isinstance(b, dict):
+            return b.get("raw_line", "")
+        return " ".join(str(x) for x in b)
+
+    skipped_new_blob = "\x1f".join(
+        _bad_line_text(b) for b in (getattr(config, "new_bad_lines", None) or [])
+    )
+
     column_mismatch_counts = Counter()
 
     difference_signature_counts = Counter()
-
-    samples_by_column = defaultdict(list)
-
-    samples_by_signature = defaultdict(list)
 
     # Per (position, legacy_value, new_value) error type.
     # Exactly 1 sample row pair stored per distinct type.
@@ -1324,13 +1504,7 @@ def reconcile(
             new_df,
             candidate_indexes,
             config,
-        )
-
-        print(
-            f"DEBUG legacy={legacy_idx} "
-            f"candidates={len(candidate_indexes)} "
-            f"best={best_score:.2f} second={second_best_score:.2f} "
-            f"status={status}"
+            id_positions,
         )
 
         # ----------------------------------------------------
@@ -1338,6 +1512,12 @@ def reconcile(
         # ----------------------------------------------------
 
         if status != "MATCHED":
+
+            likely_skipped = any(
+                str(legacy_row.iloc[p]).strip()
+                and str(legacy_row.iloc[p]).strip() in skipped_new_blob
+                for p in id_positions
+            ) if id_positions else False
 
             unresolved_records.append(
                 {
@@ -1355,6 +1535,10 @@ def reconcile(
 
                     "status":
                         status,
+
+                    "likely_cause":
+                        "possible counterpart skipped due to delimiter issue"
+                        if likely_skipped else "",
                 }
             )
 
@@ -1502,34 +1686,6 @@ def reconcile(
                 }
 
         # ----------------------------------------------------
-        # Signature samples
-        # ----------------------------------------------------
-
-        if len(
-            samples_by_signature[
-                signature
-            ]
-        ) < config.sample_limit:
-
-            samples_by_signature[
-                signature
-            ].append(
-                {
-                    "legacy_index":
-                        legacy_idx,
-
-                    "new_index":
-                        best_idx,
-
-                    "similarity":
-                        best_score,
-
-                    "differences":
-                        differences,
-                }
-            )
-
-        # ----------------------------------------------------
         # Detailed result
         # ----------------------------------------------------
 
@@ -1616,14 +1772,14 @@ def reconcile(
         # Python Unicode strings after decoding, but the
         # flag is surfaced so reviewers are aware.
         "legacy_encoding":
-            legacy_enc_used,
+            config.legacy_encoding_label,
 
         "new_encoding":
-            new_enc_used,
+            config.new_encoding_label,
 
         "encoding_mismatch":
-            legacy_enc_used.lower()
-            != new_enc_used.lower(),
+            config.legacy_encoding_label.lower().replace("-sig", "")
+            != config.new_encoding_label.lower().replace("-sig", ""),
     }
 
     return {
@@ -1641,12 +1797,6 @@ def reconcile(
 
         "difference_signature_counts":
             difference_signature_counts,
-
-        "samples_by_column":
-            samples_by_column,
-
-        "samples_by_signature":
-            samples_by_signature,
 
         "unresolved_records":
             unresolved_records,
@@ -1851,323 +2001,6 @@ def print_report(
 
 
 # ============================================================
-# SAMPLE REPORT
-# ============================================================
-
-def print_samples(
-    results,
-    limit=5,
-):
-
-    print("\n")
-    print("=" * 80)
-    print("SAMPLE MISMATCHES")
-    print("=" * 80)
-
-    samples = results[
-        "samples_by_column"
-    ]
-
-    for position in sorted(
-        samples.keys()
-    ):
-
-        records = samples[
-            position
-        ]
-
-        if not records:
-            continue
-
-        first = records[0]
-
-        print("\n")
-        print("-" * 80)
-
-        print(
-            f"POSITION {position} | "
-            f"LEGACY: {first['legacy_column']} | "
-            f"NEW: {first['new_column']}"
-        )
-
-        print("-" * 80)
-
-        for sample in records[:limit]:
-
-            print(
-                f"\nLegacy row : "
-                f"{sample['legacy_index']}"
-            )
-
-            print(
-                f"New row    : "
-                f"{sample['new_index']}"
-            )
-
-            print(
-                f"Similarity : "
-                f"{sample['similarity']:.2%}"
-            )
-
-            print(
-                f"Legacy     : "
-                f"{repr(sample['legacy_value'])}"
-            )
-
-            print(
-                f"New        : "
-                f"{repr(sample['new_value'])}"
-            )
-
-
-# ============================================================
-# EXPORT
-# ============================================================
-
-def export_results(
-    results,
-    structure_result,
-    output_directory,
-):
-
-    os.makedirs(
-        output_directory,
-        exist_ok=True,
-    )
-
-    # --------------------------------------------------------
-    # Overall summary
-    # --------------------------------------------------------
-
-    pd.DataFrame(
-        [
-            results["summary"]
-        ]
-    ).to_csv(
-        os.path.join(
-            output_directory,
-            "summary.csv",
-        ),
-        index=False,
-    )
-
-    # --------------------------------------------------------
-    # Column mismatch counts
-    # --------------------------------------------------------
-
-    rows = []
-
-    for position, count in (
-        results[
-            "column_mismatch_counts"
-        ].items()
-    ):
-
-        rows.append(
-            {
-                "position":
-                    position,
-
-                "mismatch_count":
-                    count,
-            }
-        )
-
-    pd.DataFrame(rows).sort_values(
-        "mismatch_count",
-        ascending=False,
-    ).to_csv(
-        os.path.join(
-            output_directory,
-            "column_mismatch_counts.csv",
-        ),
-        index=False,
-    )
-
-    # --------------------------------------------------------
-    # Difference signatures
-    # --------------------------------------------------------
-
-    rows = []
-
-    for signature, count in (
-        results[
-            "difference_signature_counts"
-        ].items()
-    ):
-
-        rows.append(
-            {
-                "difference_signature":
-                    " | ".join(
-                        f"{position}:{legacy_name}"
-                        for (
-                            position,
-                            legacy_name,
-                            new_name
-                        )
-                        in signature
-                    ),
-
-                "record_count":
-                    count,
-            }
-        )
-
-    pd.DataFrame(rows).sort_values(
-        "record_count",
-        ascending=False,
-    ).to_csv(
-        os.path.join(
-            output_directory,
-            "difference_signatures.csv",
-        ),
-        index=False,
-    )
-
-    # --------------------------------------------------------
-    # Detailed mismatches
-    # --------------------------------------------------------
-
-    pd.DataFrame(
-        results[
-            "detailed_results"
-        ]
-    ).to_csv(
-        os.path.join(
-            output_directory,
-            "detailed_mismatches.csv",
-        ),
-        index=False,
-    )
-
-    # --------------------------------------------------------
-    # Samples
-    # --------------------------------------------------------
-
-    sample_rows = []
-
-    for position, samples in (
-        results[
-            "samples_by_column"
-        ].items()
-    ):
-
-        for sample in samples:
-
-            sample_rows.append(
-                {
-                    "position":
-                        position,
-
-                    "legacy_column":
-                        sample[
-                            "legacy_column"
-                        ],
-
-                    "new_column":
-                        sample[
-                            "new_column"
-                        ],
-
-                    "legacy_row":
-                        sample[
-                            "legacy_index"
-                        ],
-
-                    "new_row":
-                        sample[
-                            "new_index"
-                        ],
-
-                    "similarity":
-                        sample[
-                            "similarity"
-                        ],
-
-                    "legacy_value":
-                        sample[
-                            "legacy_value"
-                        ],
-
-                    "new_value":
-                        sample[
-                            "new_value"
-                        ],
-                }
-            )
-
-    pd.DataFrame(
-        sample_rows
-    ).to_csv(
-        os.path.join(
-            output_directory,
-            "mismatch_samples.csv",
-        ),
-        index=False,
-    )
-
-    # --------------------------------------------------------
-    # Unresolved
-    # --------------------------------------------------------
-
-    pd.DataFrame(
-        results[
-            "unresolved_records"
-        ]
-    ).to_csv(
-        os.path.join(
-            output_directory,
-            "unresolved_records.csv",
-        ),
-        index=False,
-    )
-
-    # --------------------------------------------------------
-    # New-only
-    # --------------------------------------------------------
-
-    pd.DataFrame(
-        {
-            "new_index":
-                results[
-                    "new_only_records"
-                ]
-        }
-    ).to_csv(
-        os.path.join(
-            output_directory,
-            "new_only_records.csv",
-        ),
-        index=False,
-    )
-
-    # --------------------------------------------------------
-    # Column name differences
-    # --------------------------------------------------------
-
-    pd.DataFrame(
-        structure_result[
-            "column_differences"
-        ]
-    ).to_csv(
-        os.path.join(
-            output_directory,
-            "column_name_differences.csv",
-        ),
-        index=False,
-    )
-
-    print(
-        f"\nOutput written to: "
-        f"{output_directory}"
-    )
-
-
-
-
-
-# ============================================================
 # NUMERIC COLUMN IDENTIFICATION
 # ============================================================
 
@@ -2343,7 +2176,7 @@ def identify_grouping_columns(
         if not non_empty:
             continue
 
-        distinct = len(set(non_empty))
+        distinct = len({v.strip().lower() for v in non_empty})
 
         if distinct > config.max_grouping_cardinality:
             continue
@@ -2380,8 +2213,6 @@ def compute_rollups(
     numeric_cols: list,
     grouping_cols: list,
     null_token: str,
-    error_legacy_indices=None,
-    error_new_indices=None,
 ) -> dict:
     """
     Compute per-file and grouped rollups for all numeric columns.
@@ -2452,8 +2283,6 @@ def compute_rollups(
             n_sum   = sum(d for _, d in new_vals)
             l_count = len(legacy_vals)
             n_count = len(new_vals)
-            l_avg   = (l_sum / l_count) if l_count else Decimal(0)
-            n_avg   = (n_sum / n_count) if n_count else Decimal(0)
 
             totals[col] = {
                 "legacy_sum":     l_sum,
@@ -2462,10 +2291,7 @@ def compute_rollups(
                 "new_count":      n_count,
                 "legacy_skipped": l_skip,
                 "new_skipped":    n_skip,
-                "legacy_avg":     l_avg,
-                "new_avg":        n_avg,
                 "sum_match":      l_sum == n_sum,
-                "avg_match":      l_avg == n_avg,
             }
         return totals
 
@@ -2475,13 +2301,23 @@ def compute_rollups(
         for g_col in grouping_cols:
             grouped_totals[g_col] = {}
 
-            all_vals = set(legacy_frame[g_col].tolist()) | set(new_frame[g_col].tolist())
-            all_vals.discard("")
-            all_vals.discard(null_token)
+            l_keys = legacy_frame[g_col].astype(str).str.strip().str.lower()
+            n_keys = new_frame[g_col].astype(str).str.strip().str.lower()
 
-            for g_val in sorted(all_vals):
-                legacy_mask = legacy_frame[g_col] == g_val
-                new_mask    = new_frame[g_col]    == g_val
+            # display label = first trimmed spelling seen for each key
+            labels = {}
+            for raw in list(legacy_frame[g_col]) + list(new_frame[g_col]):
+                t = str(raw).strip()
+                labels.setdefault(t.lower(), t)
+
+            all_keys = set(l_keys.tolist()) | set(n_keys.tolist())
+            all_keys.discard("")
+            all_keys.discard(null_token.lower())
+
+            for g_key in sorted(all_keys):
+                g_val = labels[g_key]
+                legacy_mask = l_keys == g_key
+                new_mask    = n_keys == g_key
 
                 legacy_sub = legacy_frame[legacy_mask]
                 new_sub    = new_frame[new_mask]
@@ -2495,8 +2331,6 @@ def compute_rollups(
                     n_sum   = sum(d for _, d in nv)
                     l_count = len(lv)
                     n_count = len(nv)
-                    l_avg   = (l_sum / l_count) if l_count else Decimal(0)
-                    n_avg   = (n_sum / n_count) if n_count else Decimal(0)
 
                     col_stats[n_col] = {
                         "legacy_sum":     l_sum,
@@ -2505,10 +2339,7 @@ def compute_rollups(
                         "new_count":      n_count,
                         "legacy_skipped": l_skip,
                         "new_skipped":    n_skip,
-                        "legacy_avg":     l_avg,
-                        "new_avg":        n_avg,
                         "sum_match":      l_sum == n_sum,
-                        "avg_match":      l_avg == n_avg,
                     }
 
                 grouped_totals[g_col][g_val] = col_stats
@@ -2527,27 +2358,32 @@ def compute_rollups(
     file_totals = _summarise_numeric_frame(legacy_df, new_df)
     grouped_totals = _summarise_grouped_frame(legacy_df, new_df)
 
-    error_legacy_indices = set(error_legacy_indices or [])
-    error_new_indices = set(error_new_indices or [])
-
-    legacy_without_errors = legacy_df.loc[~legacy_df.index.isin(error_legacy_indices)] if error_legacy_indices else legacy_df
-    new_without_errors = new_df.loc[~new_df.index.isin(error_new_indices)] if error_new_indices else new_df
-
-    file_totals_without_errors = _summarise_numeric_frame(legacy_without_errors, new_without_errors)
-    grouped_totals_without_errors = _summarise_grouped_frame(legacy_without_errors, new_without_errors)
-
     return {
         "numeric_columns":  numeric_cols,
         "grouping_columns": grouping_cols,
         "parse_rates":      parse_rates,
         "file_totals":      file_totals,
         "grouped_totals":   grouped_totals,
-        "file_totals_without_errors": file_totals_without_errors,
-        "grouped_totals_without_errors": grouped_totals_without_errors,
     }
+
 
 # ============================================================
 # UNIFIED SINGLE-FILE CSV REPORT
+# ============================================================
+
+def build_report_name(legacy_file: str, new_file: str) -> str:
+    # Compare bare file names (no folder, no .csv). The p/a prefix is the
+    # part that differs, so the longest common chunk is the shared name.
+    l = os.path.splitext(os.path.basename(legacy_file))[0]
+    n = os.path.splitext(os.path.basename(new_file))[0]
+
+    m = difflib.SequenceMatcher(None, l, n).find_longest_match(0, len(l), 0, len(n))
+    common = l[m.a:m.a + m.size].strip("_-. ")
+
+    return f"{common or 'reconciliation'}_recon_report.csv" # .txt if needed
+
+# ============================================================
+# EXPORT CSV REPORT
 # ============================================================
 
 def export_unified_csv(
@@ -2573,14 +2409,12 @@ def export_unified_csv(
 
     import csv as _csv
 
-    os.makedirs(
-        config.output_directory,
-        exist_ok=True,
-    )
+    out_dir = safe_path(config.output_directory, must_exist=False)
+    os.makedirs(out_dir, exist_ok=True)
 
     out_path = os.path.join(
-        config.output_directory,
-        "reconciliation_report.csv",
+        out_dir,
+        build_report_name(config.legacy_file, config.new_file),
     )
 
     summary     = results["summary"]
@@ -2592,6 +2426,10 @@ def export_unified_csv(
     column_error_type_counts = results["column_error_type_counts"]
 
     rows = []   # list of lists – written as CSV at the end
+
+    rows.append(["=" * 60])
+    rows.append(["RECONCILIATION RESULTS"])
+    rows.append(["=" * 60])
 
     # Keep visual separation consistent in the CSV report.
     # A "blank line" means an empty CSV record.  Use two empty
@@ -2645,17 +2483,27 @@ def export_unified_csv(
             "at every position."
         )
     else:
-        legacy_name_list = ", ".join(
-            d["legacy_column"] for d in col_diffs
-        )
-        new_name_list = ", ".join(
-            d["new_column"] for d in col_diffs
-        )
+        # legacy_name_list = ", ".join(
+        #     d["legacy_column"] for d in col_diffs
+        # )
+        # new_name_list = ", ".join(
+        #     d["new_column"] for d in col_diffs
+        # )
+
+        legacy_name_list = ", ".join(d["legacy_column"] or "" for d in col_diffs)
+        new_name_list = ", ".join(d["new_column"] or "" for d in col_diffs)
+
         summary_line(
             f"{len(col_diffs)} column name difference(s) found. "
             f"Legacy: [{legacy_name_list}] | "
             f"New: [{new_name_list}]"
         )
+
+        if summary_extra := [d for d in col_diffs if d["legacy_column"] is None or d["new_column"] is None]:
+            summary_line(
+                f"{len(summary_extra)} extra trailing column(s) excluded from comparison."
+            )
+
         rows.append(["position", "legacy_column_name", "new_column_name"])
         for d in col_diffs:
             rows.append([
@@ -2701,7 +2549,66 @@ def export_unified_csv(
     rows.append(["new_only_records",  "", summary["new_only_records"]])
 
     # ─────────────────────────────────────────────────────────
-    # 4. NEWLINE / EOL
+    # 4. UNRESOLVED RECORDS
+    # ─────────────────────────────────────────────────────────
+
+    section("UNRESOLVED RECORDS")
+
+    unres = results["unresolved_records"]
+    new_only = results["new_only_records"]
+
+    if not unres and not new_only:
+        summary_line("No unresolved records.")
+    else:
+        summary_line(
+            f"{len(unres)} legacy record(s) could not be paired; "
+            f"{len(new_only)} new record(s) remain unpaired."
+        )
+
+        blank()
+        rows.append(["--- LEGACY (unresolved, as in file) ---"])
+        rows.append(["source", "file_row", "status", "best_similarity"] + legacy_cols)
+        for r in unres:
+            i = r["legacy_index"]
+            rows.append(
+                ["[LEGACY]", i + 2, r["status"], f"{r['best_similarity']:.2f}"]
+                + legacy_df.loc[i].tolist()
+            )
+
+        blank()
+        rows.append(["--- NEW (unpaired, as in file) ---"])
+        rows.append(["source", "file_row"] + new_cols)
+        for i in new_only:
+            rows.append(["[NEW]", i + 2] + new_df.loc[i].tolist())
+
+    # ─────────────────────────────────────────────────────────
+    # 5. BAD LINES (DELIMITER COUNT MISMATCH)
+    # ─────────────────────────────────────────────────────────
+
+    section("SKIPPED LINES (delimiter count mismatch)")
+    if not config.legacy_bad_lines and not config.new_bad_lines:
+        summary_line("No rows skipped due to delimiter-count anomalies.")
+    else:
+        summary_line(
+            f"{len(config.legacy_bad_lines or [])} legacy row(s), "
+            f"{len(config.new_bad_lines or [])} new row(s) skipped."
+        )
+
+        def _bad_line_row(b):
+            if isinstance(b, dict):
+                return b.get("row", ""), b.get("raw_line", str(b))
+            return "", ", ".join(str(x) for x in b)   # raw list from on_bad_lines
+
+        rows.append(["file", "row", "detail"])
+        for b in config.legacy_bad_lines or []:
+            row_no, detail = _bad_line_row(b)
+            rows.append(["legacy", row_no, detail])
+        for b in config.new_bad_lines or []:
+            row_no, detail = _bad_line_row(b)
+            rows.append(["new", row_no, detail])
+
+    # ─────────────────────────────────────────────────────────
+    # 6. NEWLINE / EOL
     # ─────────────────────────────────────────────────────────
 
     section("NEWLINE / EOL DIFFERENCES")
@@ -2767,7 +2674,7 @@ def export_unified_csv(
             rows.append(["(none)"])
 
     # ─────────────────────────────────────────────────────────
-    # 5. MISMATCHED DATA
+    # 7. MISMATCHED DATA
     # One block per (column, error-type).
     # Error type = distinct (legacy_value, new_value) pair.
     # Each block: column header row, then 1 legacy row,
@@ -2786,7 +2693,9 @@ def export_unified_csv(
             position = key[0]
             by_position[position].append(key)
 
-        for position in sorted(by_position.keys()):
+        positions_sorted = sorted(by_position.keys())
+
+        for position in positions_sorted:
 
             keys_for_col = sorted(
                 by_position[position],
@@ -2809,8 +2718,8 @@ def export_unified_csv(
                 for k in keys_for_col
             )
 
-            blank()
-            
+            if position != positions_sorted[0]:
+                blank()
             summary_line(
                 f"Column '{col_label}' (position {position}): "
                 f"{type_count} distinct error type(s) across "
@@ -2862,7 +2771,7 @@ def export_unified_csv(
                 )
 
     # ─────────────────────────────────────────────────────────
-    # 6. NUMERIC ROLLUP VALIDATION
+    # 8. NUMERIC ROLLUP VALIDATION
     # ─────────────────────────────────────────────────────────
 
     rollup = rollup or results.get("rollup")
@@ -2911,6 +2820,15 @@ def export_unified_csv(
             rows.append([f"--- {title} ---"])
             blank()
 
+            total_skipped = len(config.legacy_bad_lines or []) + len(config.new_bad_lines or [])
+            if total_skipped:
+                summary_line(
+                    f"NOTE: {total_skipped} row(s) skipped during load due to "
+                    "delimiter count mismatch (see SKIPPED LINES section) are "
+                    "excluded from this rollup — totals reflect only rows that "
+                    "were successfully parsed."
+                )
+
             header = ["metric"]
             for col in num_cols:
                 header += [f"{col} [LEGACY]", f"{col} [NEW]"]
@@ -2925,16 +2843,6 @@ def export_unified_csv(
                     str(s["new_sum"]) + match_flag,
                 ]
             rows.append(sum_row)
-
-            avg_row = ["AVERAGE"]
-            for col in num_cols:
-                s = totals[col]
-                match_flag = "" if s["avg_match"] else " !"
-                avg_row += [
-                    str(round(s["legacy_avg"], 6)) + match_flag,
-                    str(round(s["new_avg"], 6)) + match_flag,
-                ]
-            rows.append(avg_row)
 
             cnt_row = ["COUNT (parsed)"]
             for col in num_cols:
@@ -2956,8 +2864,9 @@ def export_unified_csv(
 
             mismatched_cols = [
                 col for col in num_cols
-                if not totals[col]["sum_match"] or not totals[col]["avg_match"]
+                if not totals[col]["sum_match"]
             ]
+
             if mismatched_cols:
                 summary_line(
                     f"ROLLUP MISMATCH on {len(mismatched_cols)} column(s): "
@@ -2966,26 +2875,24 @@ def export_unified_csv(
                 )
             else:
                 summary_line(
-                    "All numeric column totals and averages match "
+                    "All numeric column totals match "
                     "between legacy and new files."
                 )
 
             if include_grouped_values and grp_cols:
                 blank()
-                rows.append([f"--- GROUPED ROLLUPS ({title}) ---"])
+                rows.append([f"--- GROUPED ROLLUPS ---"])
 
                 for g_col in grp_cols:
                     blank()
                     rows.append([f"Grouped by: {g_col}"])
-                    blank()
+                    rows.append([])      # single blank line
 
                     g_header = [g_col]
                     for col in num_cols:
                         g_header += [
                             f"{col} SUM [LEGACY]",
                             f"{col} SUM [NEW]",
-                            f"{col} AVG [LEGACY]",
-                            f"{col} AVG [NEW]",
                         ]
                     rows.append(g_header)
 
@@ -2996,82 +2903,53 @@ def export_unified_csv(
 
                         for col in num_cols:
                             cs = col_stats.get(col, {})
-                            l_sum = cs.get("legacy_sum", "")
-                            n_sum = cs.get("new_sum", "")
-                            l_avg = cs.get("legacy_avg", "")
-                            n_avg = cs.get("new_avg", "")
-
                             sum_flag = "" if cs.get("sum_match", True) else " !"
-                            avg_flag = "" if cs.get("avg_match", True) else " !"
-
                             data_row += [
-                                str(l_sum) + sum_flag,
-                                str(n_sum) + sum_flag,
-                                str(round(l_avg, 6)) + avg_flag
-                                if isinstance(l_avg, object) and hasattr(l_avg, "__round__")
-                                else str(l_avg) + avg_flag,
-                                str(round(n_avg, 6)) + avg_flag
-                                if isinstance(n_avg, object) and hasattr(n_avg, "__round__")
-                                else str(n_avg) + avg_flag,
+                                str(cs.get("legacy_sum", "")) + sum_flag,
+                                str(cs.get("new_sum", "")) + sum_flag,
                             ]
 
                         rows.append(data_row)
 
-        file_totals_with_errors = ft
-        file_totals_without_errors = rollup.get("file_totals_without_errors", ft)
-        grouped_totals_with_errors = rollup["grouped_totals"]
-        grouped_totals_without_errors = rollup.get("grouped_totals_without_errors", grouped_totals_with_errors)
+                    mismatch_lines = []
+                    for c in num_cols:
+                        for g_val in sorted(grp_data.keys()):
+                            cs = grp_data[g_val].get(c, {})
+                            if cs.get("sum_match", True):
+                                continue
+                            delta = cs["new_sum"] - cs["legacy_sum"]
+                            mismatch_lines.append(
+                                f"{c}: {g_col}={g_val} sum diff {delta:+}"
+                            )
+
+                    rows.append([])      # single blank line
+                    if mismatch_lines:
+                        summary_line(
+                            f"ROLLUP MISMATCH grouped by {g_col} on "
+                            f"{len(mismatch_lines)} group/column combination(s). "
+                            "Cells marked with ' !' indicate a difference."
+                        )
+                        for line in mismatch_lines:
+                            summary_line(line)
+                    else:
+                        summary_line(
+                            f"All {g_col} group totals match "
+                            "between legacy and new files."
+                        )
 
         write_numeric_rollup_section(
-            "FILE-LEVEL ROLLUP (WITH ERRORS)",
-            file_totals_with_errors,
-            grouped_totals_with_errors,
+            "FILE-LEVEL ROLLUP",
+            ft,
+            rollup["grouped_totals"],
             include_grouped_values=bool(grp_cols),
         )
 
-        write_numeric_rollup_section(
-            "FILE-LEVEL ROLLUP (WITHOUT ERRORS)",
-            file_totals_without_errors,
-            grouped_totals_without_errors,
-            include_grouped_values=bool(grp_cols),
-        )
-
-    # ─────────────────────────────────────────────────────────
-    # 7. UNRESOLVED RECORDS
-    # ─────────────────────────────────────────────────────────
-
-    section("UNRESOLVED RECORDS")
-
-    unres = results["unresolved_records"]
-    new_only = results["new_only_records"]
-
-    if not unres and not new_only:
-        summary_line("No unresolved records.")
-    else:
-        summary_line(
-            f"{len(unres)} legacy record(s) could not be paired; "
-            f"{len(new_only)} new record(s) remain unpaired."
-        )
-
-        blank()
-        rows.append(["--- LEGACY (unresolved, as in file) ---"])
-        rows.append(["source", "file_row", "status", "best_similarity"] + legacy_cols)
-        for r in unres:
-            i = r["legacy_index"]
-            rows.append(
-                ["[LEGACY]", i + 2, r["status"], f"{r['best_similarity']:.2f}"]
-                + legacy_df.loc[i].tolist()
-            )
-
-        blank()
-        rows.append(["--- NEW (unpaired, as in file) ---"])
-        rows.append(["source", "file_row"] + new_cols)
-        for i in new_only:
-            rows.append(["[NEW]", i + 2] + new_df.loc[i].tolist())
 
     # ─────────────────────────────────────────────────────────
     # Write
     # ─────────────────────────────────────────────────────────
+
+    ###### CSV ######
 
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = _csv.writer(f, quoting=_csv.QUOTE_ALL)
@@ -3080,6 +2958,15 @@ def export_unified_csv(
 
     print(f"\nUnified report written to: {out_path}")
     return out_path
+
+    ###### TXT ######
+
+    # with open(out_path, "w", newline="", encoding="utf-8") as f:
+    #     for row in rows:
+    #         f.write(" | ".join(str(c) for c in row) + "\n")
+
+    # print(f"\nUnified report written to: {out_path}")
+    # return out_path
 
 # ============================================================
 # MAIN
@@ -3178,8 +3065,8 @@ def parse_args():
 
     parser.add_argument(
         "--delimiter",
-        default=",",
-        help="Field delimiter character (default: ',')",
+        default="",              # was ","
+        help="Field delimiter (auto-detected when omitted)",
     )
 
     parser.add_argument(
@@ -3261,6 +3148,14 @@ def parse_args():
         ),
     )
 
+    parser.add_argument(
+        "--precision",
+        type=int,
+        default=2,
+        dest="precision_digits",
+        help="Decimal places used to detect PRECISION_MISMATCH (default: 2)",
+    )
+
     parser.set_defaults(doublequote=True)
 
     return parser.parse_args()
@@ -3271,6 +3166,8 @@ if __name__ == "__main__":
     args = parse_args()
 
     config = ReconciliationConfig(
+
+        precision_digits=args.precision_digits,
 
         legacy_file=args.legacy_file,
         legacy_encoding=args.legacy_encoding,
@@ -3297,6 +3194,8 @@ if __name__ == "__main__":
         # Rollup
         max_grouping_cardinality=args.max_grouping_cardinality,
     )
+
+    _PRECISION_DIGITS = config.precision_digits
 
     # --------------------------------------------------------
     # 1. LOAD CSVs
@@ -3335,16 +3234,30 @@ if __name__ == "__main__":
         "column_count_match"
     ]:
 
-        raise ValueError(
-            "\nColumn count mismatch.\n"
-            f"Legacy columns = "
-            f"{structure_result['legacy_column_count']}\n"
-            f"New columns = "
-            f"{structure_result['new_column_count']}\n\n"
-            "Column position is being used as the "
-            "comparison basis, therefore the files "
-            "must have the same number of columns."
+        # raise ValueError(
+            # "\nColumn count mismatch.\n"
+            # f"Legacy columns = "
+            # f"{structure_result['legacy_column_count']}\n"
+            # f"New columns = "
+            # f"{structure_result['new_column_count']}\n\n"
+            # "Column position is being used as the "
+            # "comparison basis, therefore the files "
+            # "must have the same number of columns."
+
+        common = min(
+            structure_result["legacy_column_count"],
+            structure_result["new_column_count"],
         )
+        if not structure_result["column_count_match"]:
+            print(
+                f"\nWARNING: column count differs "
+                f"(legacy={structure_result['legacy_column_count']}, "
+                f"new={structure_result['new_column_count']}). "
+                f"Comparing first {common} columns only."
+            )
+  
+        legacy_df = legacy_df.iloc[:, :common]
+        new_df = new_df.iloc[:, :common]
 
     # --------------------------------------------------------
     # 3. RECONCILE
@@ -3375,11 +3288,13 @@ if __name__ == "__main__":
     legacy_eol = detect_eol(
         config.legacy_file,
         config.legacy_encoding,
+        config.legacy_delimiter,
     )
 
     new_eol = detect_eol(
         config.new_file,
         config.new_encoding,
+        config.new_delimiter,
     )
 
     print(
@@ -3403,11 +3318,6 @@ if __name__ == "__main__":
     print_report(
         results,
         structure_result,
-    )
-
-    print_samples(
-        results,
-        limit=config.sample_limit,
     )
 
     # --------------------------------------------------------
@@ -3437,15 +3347,6 @@ if __name__ == "__main__":
         + (", ".join(grouping_cols) if grouping_cols else "(none)")
     )
 
-    error_legacy_indices = [
-        pair["legacy_index"]
-        for pair in results["detailed_results"]
-    ]
-    error_new_indices = [
-        pair["new_index"]
-        for pair in results["detailed_results"]
-    ]
-
     new_df_for_rollup = new_df.copy()
     new_df_for_rollup.columns = legacy_df.columns
 
@@ -3455,18 +3356,6 @@ if __name__ == "__main__":
         numeric_cols,
         grouping_cols,
         config.null_token,
-        error_legacy_indices=error_legacy_indices,
-        error_new_indices=error_new_indices,
-    )
-
-    rollup = compute_rollups(
-        legacy_df,
-        new_df,
-        numeric_cols,
-        grouping_cols,
-        config.null_token,
-        error_legacy_indices=error_legacy_indices,
-        error_new_indices=error_new_indices,
     )
 
     # --------------------------------------------------------
@@ -3487,24 +3376,3 @@ if __name__ == "__main__":
     print(
         "\nReconciliation completed."
     )
-
-
-
-
-
-# -----------------------
-# Testing
-# -----------------------
-
-# from recon import matching_value, row_similarity, ReconciliationConfig
-# import pandas as pd
-
-# for a, b in [
-#     ("2024-03-01 10:22:33.1230000", "2024-03-01 10:22:33.123"),
-#     ("309.1237", "309.123"),
-#     ("1,000.50", "1000.50"),
-#     ("309.10", "309.1"),
-# ]:
-#     print(repr(a), "->", matching_value(a, "<NULL>"))
-#     print(repr(b), "->", matching_value(b, "<NULL>"))
-#     print()
