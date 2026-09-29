@@ -1,0 +1,7 @@
+def explain_ambiguous(legacy_row, new_df, cands, config, top=2):
+    scored = sorted(
+        ((i, row_similarity(legacy_row, new_df.loc[i], config)) for i in cands),
+        key=lambda x: x[1], reverse=True)[:top]
+    a, b = new_df.loc[scored[0][0]], new_df.loc[scored[1][0]]
+    diff_cols = [c for c in new_df.columns if a[c] != b[c]]
+    print(scored, "candidates differ in:", diff_cols or "NOTHING (identical rows)")
