@@ -63,6 +63,9 @@ class ReconciliationConfig:
     ambiguity_margin: float = 0.05
     ambiguity_max_column_diff: float = 1.0
 
+    # Sparsity threshold for candidate evaluation (ignore columns >= 70% null/empty)
+    sparsity_threshold: float = 0.70
+
     max_block_columns: int = 3
     min_uniqueness_ratio: float = 0.01
     max_block_frequency: float = 0.10
@@ -358,6 +361,97 @@ def audit_duplicate_rows(
 
 
 # ============================================================
+# RAW & MATCHING VALUES + NULL-AWARENESS
+# ============================================================
+
+_NULL_STRINGS = {
+    "",
+    "null",
+    "<null>",
+    "none",
+    "<none>",
+    "nan",
+    "n/a",
+    "#na",
+}
+
+
+def is_null_like(value: Any, null_token: str) -> bool:
+    """Return True if value is None, NaN, empty, or a string literal like 'NULL' or '<NULL>'."""
+    if value is None or pd.isna(value):
+        return True
+    val_str = str(value).strip().lower()
+    return val_str in _NULL_STRINGS or val_str == null_token.lower()
+
+
+def raw_value(value: Any, null_token: str) -> str:
+    if value is None or pd.isna(value):
+        return null_token
+    return str(value)
+
+
+def _norm_trailing(s: str) -> str:
+    s = s.replace(",", "")
+    m = _re.match(r"^(.*?\d)\.(\d*?)0*(\D*)$", s)
+    if not m:
+        return s
+    head, frac, tail = m.groups()
+    return f"{head}.{frac}{tail}" if frac else f"{head}{tail}"
+
+
+def matching_value(value: Any, null_token: str) -> str:
+    if is_null_like(value, null_token):
+        return null_token
+    return _norm_trailing(str(value).strip().lower())
+
+
+def build_matching_dataframe(df: pd.DataFrame, null_token: str):
+    result = pd.DataFrame(index=df.index)
+    for column in df.columns:
+        result[column] = df[column].map(lambda x: matching_value(x, null_token))
+    return result
+
+
+def row_fingerprint(row: pd.Series, null_token: str):
+    values = [raw_value(value, null_token) for value in row.tolist()]
+    payload = "\x1f".join(values)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+# ============================================================
+# SPARSE COLUMN IDENTIFICATION
+# ============================================================
+
+def identify_sparse_columns(
+    legacy_df: pd.DataFrame,
+    new_df: pd.DataFrame,
+    null_token: str,
+    threshold: float = 0.70,
+) -> set[int]:
+    """
+    Identify column positions where empty, <NULL>, or literal "NULL" string values 
+    account for >= threshold of rows in either the legacy or new file.
+    """
+    sparse_positions = set()
+    total_cols = min(legacy_df.shape[1], new_df.shape[1])
+
+    for pos in range(total_cols):
+        l_col = legacy_df.iloc[:, pos]
+        n_col = new_df.iloc[:, pos]
+
+        l_empty = sum(1 for v in l_col if is_null_like(v, null_token))
+        n_empty = sum(1 for v in n_col if is_null_like(v, null_token))
+
+        l_rate = l_empty / max(len(l_col), 1)
+        n_rate = n_empty / max(len(n_col), 1)
+
+        if l_rate >= threshold or n_rate >= threshold:
+            sparse_positions.add(pos)
+
+    return sparse_positions
+
+
+# ============================================================
 # STRUCTURAL VALIDATION
 # ============================================================
 
@@ -388,44 +482,6 @@ def validate_structure(legacy_df: pd.DataFrame, new_df: pd.DataFrame):
             )
 
     return result
-
-
-# ============================================================
-# RAW & MATCHING VALUES
-# ============================================================
-
-def raw_value(value: Any, null_token: str) -> str:
-    if value is None or pd.isna(value):
-        return null_token
-    return str(value)
-
-
-def _norm_trailing(s: str) -> str:
-    s = s.replace(",", "")
-    m = _re.match(r"^(.*?\d)\.(\d*?)0*(\D*)$", s)
-    if not m:
-        return s
-    head, frac, tail = m.groups()
-    return f"{head}.{frac}{tail}" if frac else f"{head}{tail}"
-
-
-def matching_value(value: Any, null_token: str) -> str:
-    if value is None or pd.isna(value):
-        return null_token
-    return _norm_trailing(str(value).strip().lower())
-
-
-def build_matching_dataframe(df: pd.DataFrame, null_token: str):
-    result = pd.DataFrame(index=df.index)
-    for column in df.columns:
-        result[column] = df[column].map(lambda x: matching_value(x, null_token))
-    return result
-
-
-def row_fingerprint(row: pd.Series, null_token: str):
-    values = [raw_value(value, null_token) for value in row.tolist()]
-    payload = "\x1f".join(values)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 # ============================================================
@@ -615,21 +671,47 @@ def row_similarity(
     legacy_row: pd.Series,
     new_row: pd.Series,
     config: ReconciliationConfig,
+    sparse_positions: set[int] = None,
 ):
+    """
+    Calculate similarity score while masking out sparse (>=70% empty/null) columns.
+    """
     total_columns = len(legacy_row)
     if total_columns == 0:
         return 0.0
 
+    sparse_positions = sparse_positions or set()
     matches = 0
-    for legacy_value, new_value in zip(legacy_row.tolist(), new_row.tolist()):
-        if matching_value(legacy_value, config.null_token) == matching_value(new_value, config.null_token):
+    evaluated_cols = 0
+
+    for pos, (legacy_value, new_value) in enumerate(
+        zip(legacy_row.tolist(), new_row.tolist())
+    ):
+        if pos in sparse_positions:
+            continue  # Mask out sparse columns during candidate similarity scoring
+
+        evaluated_cols += 1
+        if matching_value(legacy_value, config.null_token) == matching_value(
+            new_value, config.null_token
+        ):
             matches += 1
 
-    return matches / total_columns
+    # Fallback to full evaluation if all columns in a row were sparse
+    if evaluated_cols == 0:
+        return (
+            sum(
+                1
+                for a, b in zip(legacy_row.tolist(), new_row.tolist())
+                if matching_value(a, config.null_token) == matching_value(b, config.null_token)
+            )
+            / total_columns
+        )
+
+    return matches / evaluated_cols
 
 
 # ============================================================
-# BEST CANDIDATE (ADAPTIVE DECISION ENGINE INTEGRATED)
+# BEST CANDIDATE (SPARSITY MASK + NULL-SAFE STRICT ID CHECK)
 # ============================================================
 
 def find_best_candidate(
@@ -638,6 +720,7 @@ def find_best_candidate(
     candidate_indexes,
     config: ReconciliationConfig,
     id_positions=None,
+    sparse_positions: set[int] = None,
 ):
     if not candidate_indexes:
         return (None, 0.0, 0.0, "UNRESOLVED")
@@ -645,9 +728,10 @@ def find_best_candidate(
     scores = []
     for new_idx in candidate_indexes:
         new_row = new_df.loc[new_idx]
-        scores.append((new_idx, row_similarity(legacy_row, new_row, config)))
+        scores.append(
+            (new_idx, row_similarity(legacy_row, new_row, config, sparse_positions))
+        )
 
-    # Sort descending by normalized similarity
     scores.sort(key=lambda x: x[1], reverse=True)
 
     best_idx, best_score = scores[0]
@@ -657,29 +741,28 @@ def find_best_candidate(
     if total_cols == 0:
         return (None, 0.0, 0.0, "UNRESOLVED")
 
-    # ------------------------------------------------------------------
-    # 1. TIED DECISION ENGINE: Dynamic Floor & Adaptive Margin
-    # ------------------------------------------------------------------
     score_gap = best_score - second_best_score
 
-    # Require wider score gaps for lower similarity candidates
-    confidence_multiplier = max(0.5, 1.5 - best_score)
-    base_col_margin = config.ambiguity_max_column_diff / total_cols
-    effective_margin = base_col_margin * confidence_multiplier
+    # ------------------------------------------------------------------
+    # 1. COLUMN-AWARE DYNAMIC FLOOR DROP
+    # ------------------------------------------------------------------
+    clear_winner_gap = 1.0 / total_cols
+    is_clear_winner = (len(scores) == 1) or (score_gap >= clear_winner_gap)
 
-    # Adaptive Floor: If candidate has no close runner-up (clear dominant winner),
-    # allow floor to drop by up to 0.10 to capture valid transformed records.
-    is_clear_winner = (len(scores) == 1) or (score_gap >= (2.0 / total_cols))
-    effective_min_similarity = (
-        (config.min_similarity - 0.10) if is_clear_winner else config.min_similarity
-    )
+    max_floor_col_drop = 7.5
+    effective_floor_drop = (max_floor_col_drop / total_cols) if is_clear_winner else 0.0
+    effective_min_similarity = max(0.50, config.min_similarity - effective_floor_drop)
 
     if best_score < effective_min_similarity:
         return (None, best_score, second_best_score, "UNRESOLVED")
 
     # ------------------------------------------------------------------
-    # 2. EVALUATE AMBIGUITY & ID TIE-BREAKER
+    # 2. EVALUATE AMBIGUITY
     # ------------------------------------------------------------------
+    confidence_multiplier = max(0.5, 1.5 - best_score)
+    base_col_margin = config.ambiguity_max_column_diff / total_cols
+    effective_margin = base_col_margin * confidence_multiplier
+
     if len(scores) > 1 and score_gap < effective_margin:
         if id_positions:
             best_row = new_df.loc[best_idx]
@@ -696,22 +779,27 @@ def find_best_candidate(
                 for p in id_positions
             )
 
-            # Accept best candidate if it matches key IDs while runner-up fails
             if best_id_match and not second_id_match:
                 return (best_idx, best_score, second_best_score, "MATCHED")
 
         return (None, best_score, second_best_score, "AMBIGUOUS")
 
     # ------------------------------------------------------------------
-    # 3. ID MISMATCH SAFETY CHECK
+    # 3. NULL-SAFE STRICT ID MISMATCH SAFETY CHECK
     # ------------------------------------------------------------------
     if id_positions:
         new_row = new_df.loc[best_idx]
-        id_mismatch = any(
-            matching_value(legacy_row.iloc[p], config.null_token)
-            != matching_value(new_row.iloc[p], config.null_token)
-            for p in id_positions
-        )
+        id_mismatch = False
+        for p in id_positions:
+            leg_v = matching_value(legacy_row.iloc[p], config.null_token)
+            new_v = matching_value(new_row.iloc[p], config.null_token)
+
+            # Strict check applies ONLY if BOTH legacy and new have non-NULL values
+            if leg_v != config.null_token and new_v != config.null_token:
+                if leg_v != new_v:
+                    id_mismatch = True
+                    break
+
         if id_mismatch:
             return (None, best_score, second_best_score, "UNRESOLVED")
 
@@ -729,6 +817,10 @@ def compare_rows_raw(
     new_columns,
     null_token: str,
 ):
+    """
+    Final comparison for report. Uses RAW values (no null-softening),
+    so difference between '' and 'NULL' is strictly flagged.
+    """
     differences = []
     for position in range(len(legacy_columns)):
         legacy_value = raw_value(legacy_row.iloc[position], null_token)
@@ -856,6 +948,13 @@ def reconcile(
         if _ID_PATTERNS.search(col)
     ]
 
+    # Pre-scan columns that are >=70% empty/NULL across both files
+    sparse_positions = identify_sparse_columns(
+        legacy_df, new_df, config.null_token, config.sparsity_threshold
+    )
+    if sparse_positions:
+        print(f"  candidate matching: masking {len(sparse_positions)} sparse column(s) (>=70% NULL/empty)")
+
     normalized_legacy = build_matching_dataframe(legacy_df, config.null_token)
     normalized_new = build_matching_dataframe(new_df, config.null_token)
 
@@ -909,6 +1008,7 @@ def reconcile(
             candidate_indexes,
             config,
             id_positions,
+            sparse_positions,
         )
 
         if status != "MATCHED":
@@ -934,6 +1034,7 @@ def reconcile(
         new_row = new_df.loc[best_idx]
         used_new_indexes.add(best_idx)
 
+        # Full 100% column raw comparison for the final report
         differences = compare_rows_raw(
             legacy_row,
             new_row,
@@ -1091,8 +1192,7 @@ def identify_numeric_columns(df: pd.DataFrame, null_token: str) -> list:
     for col in df.columns:
         non_empty = [
             v for v in df[col]
-            if v not in ("", null_token)
-            and not (isinstance(v, float) and pd.isna(v))
+            if not is_null_like(v, null_token)
         ]
 
         if not non_empty:
@@ -1115,7 +1215,7 @@ def identify_numeric_columns(df: pd.DataFrame, null_token: str) -> list:
 
 
 _ID_PATTERNS = _re.compile(
-    r"(^|_)(id|key|code|num|no|number|ref|uuid|guid|seq|acc|secu|dt|date)($|_)",
+    r"(^|_)(id|key|code|num|no|number|ref|uuid|guid|seq)($|_)",
     _re.IGNORECASE,
 )
 _DATE_PATTERNS = _re.compile(
@@ -1159,7 +1259,7 @@ def identify_grouping_columns(
         if col in numeric_set:
             continue
 
-        non_empty = [v for v in df[col] if v not in ("", config.null_token)]
+        non_empty = [v for v in df[col] if not is_null_like(v, config.null_token)]
         if not non_empty:
             continue
 
@@ -1201,7 +1301,7 @@ def compute_rollups(
         parsed = []
         skipped = 0
         for idx, v in df[col].items():
-            if v in ("", null_token):
+            if is_null_like(v, null_token):
                 continue
             d = _safe_decimal(v)
             if d is not None:
@@ -1662,6 +1762,13 @@ def parse_args():
         dest="ambiguity_max_column_diff",
         help="Max column difference threshold to consider candidates ambiguous (default: 1.0 column difference)",
     )
+    parser.add_argument(
+        "--sparsity-threshold",
+        type=float,
+        default=0.70,
+        dest="sparsity_threshold",
+        help="Sparsity threshold to mask columns >= threshold empty during candidate evaluation (default: 0.70)",
+    )
     parser.add_argument("--max-block-columns", type=int, default=3, dest="max_block_columns")
     parser.add_argument("--max-candidates", type=int, default=100, dest="max_candidates_per_row")
     parser.add_argument("--sample-limit", type=int, default=5, dest="sample_limit")
@@ -1692,6 +1799,7 @@ if __name__ == "__main__":
         min_similarity=args.min_similarity,
         ambiguity_margin=args.ambiguity_margin,
         ambiguity_max_column_diff=args.ambiguity_max_column_diff,
+        sparsity_threshold=args.sparsity_threshold,
         max_block_columns=args.max_block_columns,
         max_candidates_per_row=args.max_candidates_per_row,
         sample_limit=args.sample_limit,
