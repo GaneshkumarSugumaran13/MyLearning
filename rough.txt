@@ -428,10 +428,7 @@ def identify_sparse_columns(
     null_token: str,
     threshold: float = 0.70,
 ) -> set[int]:
-    """
-    Identify column positions where empty, <NULL>, or literal "NULL" string values 
-    account for >= threshold of rows in either the legacy or new file.
-    """
+
     sparse_positions = set()
     total_cols = min(legacy_df.shape[1], new_df.shape[1])
 
@@ -673,9 +670,6 @@ def row_similarity(
     config: ReconciliationConfig,
     sparse_positions: set[int] = None,
 ):
-    """
-    Calculate similarity score while masking out sparse (>=70% empty/null) columns.
-    """
     total_columns = len(legacy_row)
     if total_columns == 0:
         return 0.0
@@ -688,7 +682,7 @@ def row_similarity(
         zip(legacy_row.tolist(), new_row.tolist())
     ):
         if pos in sparse_positions:
-            continue  # Mask out sparse columns during candidate similarity scoring
+            continue
 
         evaluated_cols += 1
         if matching_value(legacy_value, config.null_token) == matching_value(
@@ -696,7 +690,6 @@ def row_similarity(
         ):
             matches += 1
 
-    # Fallback to full evaluation if all columns in a row were sparse
     if evaluated_cols == 0:
         return (
             sum(
@@ -743,9 +736,7 @@ def find_best_candidate(
 
     score_gap = best_score - second_best_score
 
-    # ------------------------------------------------------------------
     # 1. COLUMN-AWARE DYNAMIC FLOOR DROP
-    # ------------------------------------------------------------------
     clear_winner_gap = 1.0 / total_cols
     is_clear_winner = (len(scores) == 1) or (score_gap >= clear_winner_gap)
 
@@ -756,9 +747,7 @@ def find_best_candidate(
     if best_score < effective_min_similarity:
         return (None, best_score, second_best_score, "UNRESOLVED")
 
-    # ------------------------------------------------------------------
     # 2. EVALUATE AMBIGUITY
-    # ------------------------------------------------------------------
     confidence_multiplier = max(0.5, 1.5 - best_score)
     base_col_margin = config.ambiguity_max_column_diff / total_cols
     effective_margin = base_col_margin * confidence_multiplier
@@ -784,9 +773,7 @@ def find_best_candidate(
 
         return (None, best_score, second_best_score, "AMBIGUOUS")
 
-    # ------------------------------------------------------------------
     # 3. NULL-SAFE STRICT ID MISMATCH SAFETY CHECK
-    # ------------------------------------------------------------------
     if id_positions:
         new_row = new_df.loc[best_idx]
         id_mismatch = False
@@ -794,7 +781,6 @@ def find_best_candidate(
             leg_v = matching_value(legacy_row.iloc[p], config.null_token)
             new_v = matching_value(new_row.iloc[p], config.null_token)
 
-            # Strict check applies ONLY if BOTH legacy and new have non-NULL values
             if leg_v != config.null_token and new_v != config.null_token:
                 if leg_v != new_v:
                     id_mismatch = True
@@ -817,10 +803,6 @@ def compare_rows_raw(
     new_columns,
     null_token: str,
 ):
-    """
-    Final comparison for report. Uses RAW values (no null-softening),
-    so difference between '' and 'NULL' is strictly flagged.
-    """
     differences = []
     for position in range(len(legacy_columns)):
         legacy_value = raw_value(legacy_row.iloc[position], null_token)
@@ -948,7 +930,6 @@ def reconcile(
         if _ID_PATTERNS.search(col)
     ]
 
-    # Pre-scan columns that are >=70% empty/NULL across both files
     sparse_positions = identify_sparse_columns(
         legacy_df, new_df, config.null_token, config.sparsity_threshold
     )
@@ -988,6 +969,9 @@ def reconcile(
     difference_signature_counts = Counter()
     column_error_type_counts = Counter()
     samples_by_error_type = {}
+
+    error_type_affected_columns = defaultdict(dict)
+    error_type_counts = Counter()
 
     for counter, legacy_idx in enumerate(unmatched_legacy, start=1):
         legacy_row = legacy_df.loc[legacy_idx]
@@ -1034,7 +1018,6 @@ def reconcile(
         new_row = new_df.loc[best_idx]
         used_new_indexes.add(best_idx)
 
-        # Full 100% column raw comparison for the final report
         differences = compare_rows_raw(
             legacy_row,
             new_row,
@@ -1059,11 +1042,17 @@ def reconcile(
 
         for difference in differences:
             position = difference["position"]
+            col_name = difference["legacy_column"] or f"Pos_{position}"
             column_mismatch_counts[position] += 1
 
             pattern = classify_difference(
                 difference["legacy_value"],
                 difference["new_value"],
+            )
+
+            error_type_counts[pattern] += 1
+            error_type_affected_columns[pattern][(position, col_name)] = (
+                error_type_affected_columns[pattern].get((position, col_name), 0) + 1
             )
 
             error_type_key = (position, pattern, "", "")
@@ -1127,6 +1116,8 @@ def reconcile(
         "blocking_columns": blocking_columns,
         "column_error_type_counts": column_error_type_counts,
         "samples_by_error_type": samples_by_error_type,
+        "error_type_counts": error_type_counts,
+        "error_type_affected_columns": error_type_affected_columns,
     }
 
 
@@ -1438,6 +1429,8 @@ def export_unified_csv(
 
     samples_by_error_type = results["samples_by_error_type"]
     column_error_type_counts = results["column_error_type_counts"]
+    error_type_counts = results.get("error_type_counts", {})
+    error_type_affected_columns = results.get("error_type_affected_columns", {})
 
     rows = []
     rows.append(["=" * 60])
@@ -1620,6 +1613,24 @@ def export_unified_csv(
     if not samples_by_error_type:
         summary_line("No data mismatches found.")
     else:
+        summary_line(
+            f"Summary of {len(error_type_counts)} distinct error type(s) "
+            f"encountered across all mismatched columns:"
+        )
+        blank()
+        rows.append(["error_type", "total_occurrences", "affected_column_count", "affected_columns"])
+
+        for err_type, total_occ in error_type_counts.most_common():
+            cols_dict = error_type_affected_columns.get(err_type, {})
+            sorted_cols = sorted(cols_dict.keys(), key=lambda x: x[0])
+            formatted_cols = " | ".join(
+                f"{pos}:{name} ({cols_dict[(pos, name)]})" for pos, name in sorted_cols
+            )
+            rows.append([err_type, total_occ, len(sorted_cols), formatted_cols])
+
+        blank()
+        summary_line("Detailed column-wise sample pairs:")
+
         by_position = defaultdict(list)
         for key in samples_by_error_type:
             position = key[0]
@@ -1683,6 +1694,7 @@ def export_unified_csv(
         num_cols = rollup["numeric_columns"]
         grp_cols = rollup["grouping_columns"]
         ft = rollup["file_totals"]
+        gt = rollup.get("grouped_totals", {})
         parse_rates = rollup.get("parse_rates", {})
 
         col_summaries = [f"{col} ({parse_rates.get(col, 1.0):.0%} numeric)" for col in num_cols]
@@ -1693,38 +1705,98 @@ def export_unified_csv(
         else:
             summary_line("No low-cardinality grouping columns identified.")
 
-        def write_numeric_rollup_section(title, totals, grouped_totals, include_grouped_values=True):
+        # --- 8a. FILE-LEVEL ROLLUP ---
+        blank()
+        rows.append(["--- FILE-LEVEL ROLLUP ---"])
+
+        # Check for file-level sum mismatches
+        mismatched_file_cols = [col for col in num_cols if not ft[col]["sum_match"]]
+        if mismatched_file_cols:
+            summary_line(
+                f"DIFFERENCES DETECTED IN FILE-LEVEL ROLLUPS FOR COLUMN(S): "
+                + ", ".join(mismatched_file_cols)
+            )
+        else:
+            summary_line("ALL FILE-LEVEL NUMERIC ROLLUPS MATCH PERFECTLY.")
+
+        blank()
+
+        header = ["metric"]
+        for col in num_cols:
+            header += [f"{col} [LEGACY]", f"{col} [NEW]"]
+        rows.append(header)
+
+        sum_row = ["SUM"]
+        for col in num_cols:
+            s = ft[col]
+            match_flag = "" if s["sum_match"] else " !"
+            sum_row += [
+                str(s["legacy_sum"]) + match_flag,
+                str(s["new_sum"]) + match_flag,
+            ]
+        rows.append(sum_row)
+
+        cnt_row = ["COUNT (parsed)"]
+        for col in num_cols:
+            s = ft[col]
+            cnt_row += [s["legacy_count"], s["new_count"]]
+        rows.append(cnt_row)
+
+        any_skipped = any(ft[col]["legacy_skipped"] > 0 or ft[col]["new_skipped"] > 0 for col in num_cols)
+        if any_skipped:
+            skip_row = ["COUNT (skipped — non-numeric values)"]
+            for col in num_cols:
+                s = ft[col]
+                skip_row += [s["legacy_skipped"], s["new_skipped"]]
+            rows.append(skip_row)
+
+        # --- 8b. COLUMN-BASED GROUPED ROLLUPS ---
+        if grp_cols:
             blank()
-            rows.append([f"--- {title} ---"])
-            blank()
+            rows.append(["--- GROUPED ROLLUPS BY COLUMN ---"])
 
-            header = ["metric"]
-            for col in num_cols:
-                header += [f"{col} [LEGACY]", f"{col} [NEW]"]
-            rows.append(header)
+            # Check for grouped sum mismatches across all groups
+            grouped_mismatches = []
+            for g_col in grp_cols:
+                grp_data = gt.get(g_col, {})
+                for g_val, col_stats in grp_data.items():
+                    for col in num_cols:
+                        cs = col_stats.get(col, {})
+                        if not cs.get("sum_match", True):
+                            grouped_mismatches.append(f"Group '{g_col}' -> Value '{g_val}' ({col})")
 
-            sum_row = ["SUM"]
-            for col in num_cols:
-                s = totals[col]
-                match_flag = "" if s["sum_match"] else " !"
-                sum_row += [
-                    str(s["legacy_sum"]) + match_flag,
-                    str(s["new_sum"]) + match_flag,
-                ]
-            rows.append(sum_row)
+            if grouped_mismatches:
+                summary_line(
+                    f"DIFFERENCES DETECTED IN GROUPED ROLLUPS: "
+                    + "; ".join(grouped_mismatches)
+                )
+            else:
+                summary_line("ALL GROUPED ROLLUPS MATCH PERFECTLY ACROSS ALL CATEGORIES.")
 
-            cnt_row = ["COUNT (parsed)"]
-            for col in num_cols:
-                s = totals[col]
-                cnt_row += [s["legacy_count"], s["new_count"]]
-            rows.append(cnt_row)
+            for g_col in grp_cols:
+                blank()
+                rows.append([f"Grouped by: {g_col}"])
+                rows.append([])
 
-        write_numeric_rollup_section(
-            "FILE-LEVEL ROLLUP",
-            ft,
-            rollup["grouped_totals"],
-            include_grouped_values=bool(grp_cols),
-        )
+                g_header = [g_col]
+                for col in num_cols:
+                    g_header += [f"{col} SUM [LEGACY]", f"{col} SUM [NEW]"]
+                rows.append(g_header)
+
+                grp_data = gt.get(g_col, {})
+                for g_val in sorted(grp_data.keys()):
+                    col_stats = grp_data[g_val]
+                    data_row = [g_val]
+
+                    for col in num_cols:
+                        cs = col_stats.get(col, {})
+                        sum_flag = "" if cs.get("sum_match", True) else " !"
+                        data_row += [
+                            str(cs.get("legacy_sum", "")) + sum_flag,
+                            str(cs.get("new_sum", "")) + sum_flag,
+                        ]
+
+                    rows.append(data_row)
 
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = _csv.writer(f, quoting=_csv.QUOTE_ALL)
