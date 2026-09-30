@@ -1671,7 +1671,7 @@ def export_unified_csv(
                     f"| occurrences={count:,}"
                 )
                 rows.append([label])
-                rows.append(legacy_cols)
+                rows.append(["file"] + legacy_cols)
 
                 legacy_full = sample["legacy_full_row"]
                 rows.append(["[LEGACY]"] + list(legacy_full))
