@@ -112,37 +112,30 @@ def _decodes_cleanly(filepath: str, codec: str) -> bool:
     except (UnicodeDecodeError, LookupError):
         return False
 
-
 def resolve_encoding(explicit: str, filepath: str, label: str) -> tuple[str, str, str]:
     if explicit:
         print(f"  {label}: {explicit} (explicit)")
         return explicit, "explicit", explicit
 
+    # 1. First test if the FULL file decodes cleanly as UTF-8
+    if _decodes_cleanly(filepath, "utf-8"):
+        print(f"  {label}: utf-8 (verified full file decode)")
+        return "utf-8", "auto-resolved", "utf-8"
+
+    # 2. If UTF-8 fails (e.g. legacy CP1252 single-byte £ character 0xA3), detect fallback
     detected, confidence = detect_encoding(filepath)
-    is_ascii = detected.lower() == "ascii"
-    codec = "utf-8" if is_ascii else detected
-    if confidence == 0.0:
-        codec = "utf-8"
+    codec = "utf-8" if detected.lower() == "ascii" else detected
 
-    if not _decodes_cleanly(filepath, codec):
-        for fallback in ("cp1252", "latin-1"):
-            if _decodes_cleanly(filepath, fallback):
-                print(
-                    f"  {label}: {fallback} "
-                    f"({codec} failed to decode the file; fell back)"
-                )
-                return fallback, "fallback", fallback
+    if _decodes_cleanly(filepath, codec):
+        print(f"  {label}: {codec} (detected fallback, confidence={confidence:.0%})")
         return codec, "detected", detected
 
-    if confidence > 0.0:
-        print(
-            f"  {label}: {codec} (auto-detected"
-            + (", chardet saw ascii-only content" if is_ascii else "")
-            + f", confidence={confidence:.0%})"
-        )
-        return codec, "detected", detected
+    # 3. Final fallback for legacy ANSI / Windows Western encodings
+    for fallback in ("cp1252", "latin-1"):
+        if _decodes_cleanly(filepath, fallback):
+            print(f"  {label}: {fallback} (fallback)")
+            return fallback, "fallback", fallback
 
-    print(f"  {label}: utf-8 (chardet inconclusive, defaulting)")
     return "utf-8", "default", "utf-8"
 
 # ============================================================
