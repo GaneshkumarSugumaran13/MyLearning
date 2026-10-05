@@ -1,0 +1,41 @@
+
+In compute_rollups(), locate _summarise_grouped_frame
+
+#################################################
+
+labels = {}
+            for raw in list(legacy_frame[g_col]) + list(new_frame[g_col]):
+                t = str(raw).strip()
+                labels.setdefault(t.lower(), t)
+
+            all_keys = set(l_keys.tolist()) | set(n_keys.tolist())
+            all_keys.discard("")
+            all_keys.discard(null_token.lower())
+
+            for g_key in sorted(all_keys):
+                g_val = labels[g_key]
+
+labels = {}
+            for raw in list(legacy_frame[g_col]) + list(new_frame[g_col]):
+                if is_null_like(raw, null_token):
+                    continue
+                t = str(raw).strip()
+                labels.setdefault(t.lower(), t)
+
+            all_keys = {
+                str(k) for k in (set(l_keys.tolist()) | set(n_keys.tolist()))
+                if k and str(k) != null_token.lower() and str(k) != "nan"
+            }
+
+            for g_key in sorted(all_keys):
+                g_val = labels.get(g_key, g_key)
+
+
+
+#############################################
+
+In export_unified_csv(), locate Section 7 (MISMATCHED DATA)
+
+rows.append(legacy_cols)
+
+rows.append(["file"] + legacy_cols)
