@@ -1,0 +1,40 @@
+=== SECTION 1: FILE METADATA & SUMMARY METRICS ===
+Metric Category,Legacy File,New File,Status / Difference
+File Encoding,UTF-8-BOM,UTF-8,MISMATCH
+Line Endings,LF (Unix/Linux),CRLF (Windows),MISMATCH
+Malformed Syntax Check,PASSED,PASSED,PASSED
+Total Records Count,45,45,Delta: 0
+Matched Records Count,0,0,Aligned by key
+Unmatched Legacy Records,0,0,0 Missing in New
+Unmatched New Records,0,0,0 Extra in New
+Total Discrepancies Found,17,17,17 Total Issues
+
+=== SECTION 2: ISSUE TYPE SUMMARY & EXAMPLES BY COLUMN ===
+Issue Type,Target Column / Tag,Total Occurrences,Example Legacy Value,Example New Value,Description Example
+ATTRIBUTE_VALUE_MISMATCH,@currency,1,USD,EUR,Value mismatch in attribute '@currency'
+EXTRA_ATTRIBUTE,@env,1,<MISSING>,PROD,Attribute '@env' added in New XML
+MISSING_ATTRIBUTE,@file_status,1,ACTIVE,<MISSING>,Attribute '@file_status' missing in New XML
+UNMATCHED_LEGACY_RECORD,Record,6,@id=R010:AccountCode=001010,<MISSING>,Record '@id=R010:AccountCode=001010' present in Legacy XML but missing in New XML
+UNMATCHED_LEGACY_RECORD,Status,1,Status=ACTIVE,<MISSING>,Record 'Status=ACTIVE' present in Legacy XML but missing in New XML
+UNMATCHED_NEW_RECORD,Record,6,<MISSING>,@id=R010:AccountCode=1010,Record '@id=R010:AccountCode=1010' present in New XML but missing in Legacy XML
+UNMATCHED_NEW_RECORD,Status,1,<MISSING>,Status=PENDING,Record 'Status=PENDING' present in New XML but missing in Legacy XML
+
+=== SECTION 3: DETAILED DISCREPANCY LOG ===
+Record Key,Target Column / Tag,Issue Type,Legacy Value,New Value,XPath,Description
+ATTRIBUTE,@env,EXTRA_ATTRIBUTE,<MISSING>,PROD,Values/@env,Attribute '@env' added in New XML
+ATTRIBUTE,@file_status,MISSING_ATTRIBUTE,ACTIVE,<MISSING>,Values/@file_status,Attribute '@file_status' missing in New XML
+@id=R010:AccountCode=001010,Record,UNMATCHED_LEGACY_RECORD,@id=R010:AccountCode=001010,<MISSING>,Values/HeaderString[key='index_0']/Record[key='@id=R010:AccountCode=001010'],Record '@id=R010:AccountCode=001010' present in Legacy XML but missing in New XML
+@id=R010:AccountCode=1010,Record,UNMATCHED_NEW_RECORD,<MISSING>,@id=R010:AccountCode=1010,Values/HeaderString[key='index_0']/Record[key='@id=R010:AccountCode=1010'],Record '@id=R010:AccountCode=1010' present in New XML but missing in Legacy XML
+ATTRIBUTE,@currency,ATTRIBUTE_VALUE_MISMATCH,USD,EUR,Values/HeaderString[key='index_0']/Record[key='@id=R015:AccountCode=001015']/Amount[key='Amount=150.00']/@currency,Value mismatch in attribute '@currency'
+Status=ACTIVE,Status,UNMATCHED_LEGACY_RECORD,Status=ACTIVE,<MISSING>,Values/HeaderString[key='index_0']/Record[key='@id=R020:AccountCode=001020']/Status[key='Status=ACTIVE'],Record 'Status=ACTIVE' present in Legacy XML but missing in New XML
+Status=PENDING,Status,UNMATCHED_NEW_RECORD,<MISSING>,Status=PENDING,Values/HeaderString[key='index_0']/Record[key='@id=R020:AccountCode=001020']/Status[key='Status=PENDING'],Record 'Status=PENDING' present in New XML but missing in Legacy XML
+@id=R041:AccountCode=003041,Record,UNMATCHED_LEGACY_RECORD,@id=R041:AccountCode=003041,<MISSING>,Values/HeaderString[key='index_0']/Record[key='@id=R041:AccountCode=003041'],Record '@id=R041:AccountCode=003041' present in Legacy XML but missing in New XML
+@id=R042:AccountCode=003042,Record,UNMATCHED_LEGACY_RECORD,@id=R042:AccountCode=003042,<MISSING>,Values/HeaderString[key='index_0']/Record[key='@id=R042:AccountCode=003042'],Record '@id=R042:AccountCode=003042' present in Legacy XML but missing in New XML
+@id=R043:AccountCode=003043,Record,UNMATCHED_LEGACY_RECORD,@id=R043:AccountCode=003043,<MISSING>,Values/HeaderString[key='index_0']/Record[key='@id=R043:AccountCode=003043'],Record '@id=R043:AccountCode=003043' present in Legacy XML but missing in New XML
+@id=R044:AccountCode=003044,Record,UNMATCHED_LEGACY_RECORD,@id=R044:AccountCode=003044,<MISSING>,Values/HeaderString[key='index_0']/Record[key='@id=R044:AccountCode=003044'],Record '@id=R044:AccountCode=003044' present in Legacy XML but missing in New XML
+@id=R045:AccountCode=003045,Record,UNMATCHED_LEGACY_RECORD,@id=R045:AccountCode=003045,<MISSING>,Values/HeaderString[key='index_0']/Record[key='@id=R045:AccountCode=003045'],Record '@id=R045:AccountCode=003045' present in Legacy XML but missing in New XML
+@id=R046:AccountCode=004046,Record,UNMATCHED_NEW_RECORD,<MISSING>,@id=R046:AccountCode=004046,Values/HeaderString[key='index_0']/Record[key='@id=R046:AccountCode=004046'],Record '@id=R046:AccountCode=004046' present in New XML but missing in Legacy XML
+@id=R047:AccountCode=004047,Record,UNMATCHED_NEW_RECORD,<MISSING>,@id=R047:AccountCode=004047,Values/HeaderString[key='index_0']/Record[key='@id=R047:AccountCode=004047'],Record '@id=R047:AccountCode=004047' present in New XML but missing in Legacy XML
+@id=R048:AccountCode=004048,Record,UNMATCHED_NEW_RECORD,<MISSING>,@id=R048:AccountCode=004048,Values/HeaderString[key='index_0']/Record[key='@id=R048:AccountCode=004048'],Record '@id=R048:AccountCode=004048' present in New XML but missing in Legacy XML
+@id=R049:AccountCode=004049,Record,UNMATCHED_NEW_RECORD,<MISSING>,@id=R049:AccountCode=004049,Values/HeaderString[key='index_0']/Record[key='@id=R049:AccountCode=004049'],Record '@id=R049:AccountCode=004049' present in New XML but missing in Legacy XML
+@id=R050:AccountCode=004050,Record,UNMATCHED_NEW_RECORD,<MISSING>,@id=R050:AccountCode=004050,Values/HeaderString[key='index_0']/Record[key='@id=R050:AccountCode=004050'],Record '@id=R050:AccountCode=004050' present in New XML but missing in Legacy XML
