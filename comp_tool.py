@@ -51,19 +51,42 @@ def load_dataset(
     file_path: str,
     key_cols: List[str],
     where_clause: Optional[str] = None,
-    encoding: str = "utf-8",
+    encoding: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Loads CSV as string preservation and produces a normalized comparison copy."""
-    try:
+    """
+    Loads CSV with automatic encoding fallback, preserves raw string view, 
+    and produces a normalized comparison copy.
+    """
+    # Encodings to try in sequence: user-specified -> cp1252 (handles 0xa3 / £) -> latin-1 -> utf-8 with replace
+    candidate_encodings = [encoding] if encoding else ["utf-8", "cp1252", "latin-1"]
+    df_raw = None
+
+    for enc in candidate_encodings:
+        if not enc:
+            continue
+        try:
+            df_raw = pd.read_csv(
+                file_path,
+                dtype=str,
+                skipinitialspace=True,
+                keep_default_na=False,
+                encoding=enc,
+            )
+            break
+        except UnicodeDecodeError:
+            continue
+
+    # Final fallback if all strict encodings fail: read with error replacement
+    if df_raw is None:
+        print(f"Warning: Falling back to lossy UTF-8 decode for {file_path}")
         df_raw = pd.read_csv(
             file_path,
             dtype=str,
             skipinitialspace=True,
             keep_default_na=False,
-            encoding=encoding,
+            encoding="utf-8",
+            encoding_errors="replace",  # <--- Step 4/5 fallback applied here
         )
-    except Exception as e:
-        sys.exit(f"Error reading {file_path}: {e}")
 
     df_raw.columns = df_raw.columns.str.strip()
 
