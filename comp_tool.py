@@ -51,17 +51,14 @@ def load_dataset(
     file_path: str,
     key_cols: List[str],
     where_clause: Optional[str] = None,
-    encoding: Optional[str] = None,
+    encoding: Optional[str] = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Loads CSV with automatic encoding fallback, preserves raw string view, 
-    and produces a normalized comparison copy.
-    """
-    # Encodings to try in sequence: user-specified -> cp1252 (handles 0xa3 / £) -> latin-1 -> utf-8 with replace
-    candidate_encodings = [encoding] if encoding else ["utf-8", "cp1252", "latin-1"]
+    
+    # 1. Try specified encoding or default to 'latin-1' (which cleanly maps 0xa3 -> £)
+    encodings_to_try = [encoding] if encoding else ["latin-1", "cp1252", "utf-8"]
     df_raw = None
 
-    for enc in candidate_encodings:
+    for enc in encodings_to_try:
         if not enc:
             continue
         try:
@@ -71,54 +68,46 @@ def load_dataset(
                 skipinitialspace=True,
                 keep_default_na=False,
                 encoding=enc,
+                engine="python",             # <--- Bypasses the C-engine crash
+                encoding_errors="replace"    # <--- Forces replacement of any rogue byte
             )
             break
-        except UnicodeDecodeError:
+        except Exception:
             continue
 
-    # Final fallback if all strict encodings fail: read with error replacement
     if df_raw is None:
-        print(f"Warning: Falling back to lossy UTF-8 decode for {file_path}")
+        # Ultimate fallback: read file bytes directly and ignore broken chars
+        with open(file_path, "rb") as f:
+            raw_content = f.read().decode("latin-1", errors="replace")
+        import io
         df_raw = pd.read_csv(
-            file_path,
+            io.StringIO(raw_content),
             dtype=str,
             skipinitialspace=True,
             keep_default_na=False,
-            encoding="utf-8",
-            encoding_errors="replace",  # <--- Step 4/5 fallback applied here
+            engine="python"
         )
 
     df_raw.columns = df_raw.columns.str.strip()
 
-    # Validate key columns
     for key in key_cols:
         if key not in df_raw.columns:
-            sys.exit(
-                f"Error: Key column '{key}' not found in {file_path}.\nAvailable columns: {list(df_raw.columns)}"
-            )
+            sys.exit(f"Error: Key column '{key}' not found in {file_path}.\nAvailable columns: {list(df_raw.columns)}")
 
-    # Apply WHERE clause if provided
     if where_clause:
         try:
             df_raw = df_raw.query(where_clause).copy()
         except Exception as e:
-            sys.exit(
-                f"Error applying where-clause '{where_clause}' to {file_path}: {e}"
-            )
+            sys.exit(f"Error applying where-clause '{where_clause}' to {file_path}: {e}")
 
-    # Normalize key values to guarantee alignment
     for k in key_cols:
         df_raw[k] = df_raw[k].astype(str).str.strip()
 
-    # Deduplicate on keys
     if df_raw.duplicated(subset=key_cols).any():
         dupe_count = df_raw.duplicated(subset=key_cols).sum()
-        print(
-            f"Notice: {dupe_count} duplicate key records found in {file_path}. Keeping first occurrence."
-        )
-        df_raw = df_raw.drop_duplicates(subset=key_cols, keep="first")
+        print(f"Notice: {dupe_count} duplicate key records found in {file_path}. Keeping first occurrence.")
+        df_raw = df_raw.drop_duplicates(subset=key_cols, keep='first')
 
-    # Generate normalized copy for logical matching
     df_norm = df_raw.copy()
     for col in df_norm.columns:
         df_norm[col] = df_norm[col].apply(normalize_value)
